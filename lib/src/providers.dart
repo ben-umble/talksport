@@ -31,19 +31,22 @@ final searchQueryProvider = StateProvider<String>((ref) => '');
 
 final selectedDayNumberProvider = StateProvider<int>((ref) => 0);
 
-final scheduleProvider =
-    FutureProvider.autoDispose.family<List<ScheduleDay>, String>(
-  (ref, stationSlug) {
-    return ref.watch(talkSportApiProvider).fetchSchedule(stationSlug);
-  },
-);
+final scheduleProvider = FutureProvider.autoDispose
+    .family<List<ScheduleDay>, String>((ref, stationSlug) {
+      ref.watch(_scheduleTickerProvider);
+      return ref.watch(talkSportApiProvider).fetchSchedule(stationSlug);
+    });
 
-final nowPlayingProvider =
-    FutureProvider.autoDispose.family<NowPlaying, String>((ref, stationSlug) {
-  ref.watch(_nowPlayingTickerProvider);
-  return ref.watch(talkSportApiProvider).fetchNowPlaying(stationSlug);
-});
+final nowPlayingProvider = FutureProvider.autoDispose
+    .family<NowPlaying, String>((ref, stationSlug) {
+      ref.watch(_nowPlayingTickerProvider);
+      return ref.watch(talkSportApiProvider).fetchNowPlaying(stationSlug);
+    });
 
 final _nowPlayingTickerProvider = StreamProvider.autoDispose<void>((ref) {
   return Stream<void>.periodic(const Duration(minutes: 1));
+});
+
+final _scheduleTickerProvider = StreamProvider.autoDispose<void>((ref) {
+  return Stream<void>.periodic(const Duration(minutes: 2));
 });

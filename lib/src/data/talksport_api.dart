@@ -13,9 +13,9 @@ class TalkSportApi {
     http.Client? client,
     TalkSportPageScraper? pageScraper,
     TalkSportMetadataCache? metadataCache,
-  })  : _client = client ?? http.Client(),
-        _pageScraper = pageScraper ?? TalkSportPageScraper.maybeCreate(),
-        _metadataCache = metadataCache ?? TalkSportMetadataCache();
+  }) : _client = client ?? http.Client(),
+       _pageScraper = pageScraper ?? TalkSportPageScraper.maybeCreate(),
+       _metadataCache = metadataCache ?? TalkSportMetadataCache();
 
   static const _baseUrl = 'https://talksport.com/play/api';
   static const _headers = {
@@ -37,16 +37,12 @@ class TalkSportApi {
   final Map<String, _ScheduleCacheEntry> _scheduleCache = {};
   final Map<String, Future<void>> _backgroundRefreshes = {};
 
-  static const _cachedScheduleMaxAge = Duration(hours: 8);
-  static const _cachedNowPlayingMaxAge = Duration(minutes: 30);
+  static const _cachedMetadataMaxAge = Duration(days: 7);
   static const _backgroundRefreshAfter = Duration(minutes: 2);
 
   Future<List<ScheduleDay>> fetchSchedule(String stationSlug) async {
     final cache = _scheduleCache[stationSlug];
-    final cached = await _cachedPagePayload(
-      stationSlug,
-      maxAge: _cachedScheduleMaxAge,
-    );
+    final cached = await _cachedPagePayload(stationSlug);
     if (cached != null) {
       _refreshMetadataInBackground(stationSlug, cached);
       return cached.payload.schedule;
@@ -54,28 +50,28 @@ class TalkSportApi {
 
     final pagePayload = await _fetchPagePayload(stationSlug);
     if (pagePayload != null) {
-      _scheduleCache[stationSlug] = _ScheduleCacheEntry(
-        pagePayload.schedule,
-        DateTime.now(),
-      );
+      _scheduleCache[stationSlug] = _ScheduleCacheEntry(pagePayload.schedule);
       unawaited(_metadataCache.write(stationSlug, pagePayload));
       return pagePayload.schedule;
     }
 
     try {
-      final decoded = await _getJson(
-        Uri.parse('$_baseUrl/schedule/$stationSlug'),
-        'Schedule',
-      ) as List<dynamic>;
-      final days = decoded
-          .whereType<Map<String, dynamic>>()
-          .map(ScheduleDay.fromJson)
-          .toList()
-        ..sort((a, b) => a.dayNumber.compareTo(b.dayNumber));
-      _scheduleCache[stationSlug] = _ScheduleCacheEntry(days, DateTime.now());
+      final decoded =
+          await _getJson(
+                Uri.parse('$_baseUrl/schedule/$stationSlug'),
+                'Schedule',
+              )
+              as List<dynamic>;
+      final days =
+          decoded
+              .whereType<Map<String, dynamic>>()
+              .map(ScheduleDay.fromJson)
+              .toList()
+            ..sort((a, b) => a.dayNumber.compareTo(b.dayNumber));
+      _scheduleCache[stationSlug] = _ScheduleCacheEntry(days);
       return days;
     } catch (error, stackTrace) {
-      if (cache != null && cache.isFresh) {
+      if (cache != null) {
         return cache.days;
       }
       Error.throwWithStackTrace(error, stackTrace);
@@ -83,10 +79,7 @@ class TalkSportApi {
   }
 
   Future<NowPlaying> fetchNowPlaying(String stationSlug) async {
-    final cached = await _cachedPagePayload(
-      stationSlug,
-      maxAge: _cachedNowPlayingMaxAge,
-    );
+    final cached = await _cachedPagePayload(stationSlug);
     if (cached != null) {
       _refreshMetadataInBackground(stationSlug, cached);
       return cached.payload.nowPlaying;
@@ -99,10 +92,12 @@ class TalkSportApi {
     }
 
     try {
-      final decoded = await _getJson(
-        Uri.parse('$_baseUrl/onAirNow/$stationSlug'),
-        'Now playing',
-      ) as Map<String, dynamic>;
+      final decoded =
+          await _getJson(
+                Uri.parse('$_baseUrl/onAirNow/$stationSlug'),
+                'Now playing',
+              )
+              as Map<String, dynamic>;
       return NowPlaying.fromJson(decoded);
     } catch (error, stackTrace) {
       Error.throwWithStackTrace(error, stackTrace);
@@ -145,11 +140,10 @@ class TalkSportApi {
   }
 
   Future<CachedTalkSportPagePayload?> _cachedPagePayload(
-    String stationSlug, {
-    required Duration maxAge,
-  }) async {
+    String stationSlug,
+  ) async {
     final cached = await _metadataCache.read(stationSlug);
-    if (cached == null || cached.age > maxAge) {
+    if (cached == null || cached.age > _cachedMetadataMaxAge) {
       return null;
     }
     return cached;
@@ -168,10 +162,7 @@ class TalkSportApi {
         .then((payload) async {
           if (payload != null) {
             await _metadataCache.write(stationSlug, payload);
-            _scheduleCache[stationSlug] = _ScheduleCacheEntry(
-              payload.schedule,
-              DateTime.now(),
-            );
+            _scheduleCache[stationSlug] = _ScheduleCacheEntry(payload.schedule);
           }
         })
         .catchError((_) {})
@@ -213,10 +204,7 @@ class TalkSportApiException implements Exception {
 }
 
 class _ScheduleCacheEntry {
-  const _ScheduleCacheEntry(this.days, this.createdAt);
+  const _ScheduleCacheEntry(this.days);
 
   final List<ScheduleDay> days;
-  final DateTime createdAt;
-
-  bool get isFresh => DateTime.now().difference(createdAt).inMinutes < 5;
 }
