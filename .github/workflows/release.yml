@@ -13,9 +13,6 @@ jobs:
   build:
     name: Build release assets
     runs-on: windows-2022
-    env:
-      PUB_CACHE: ${{ runner.temp }}\pub-cache
-      CARGO_HOME: ${{ runner.temp }}\cargo
 
     steps:
       - name: Checkout
@@ -36,16 +33,22 @@ jobs:
       - name: Prepare Windows runner folders
         shell: pwsh
         run: |
+          $pubCache = Join-Path $env:RUNNER_TEMP "pub-cache"
+          $cargoHome = Join-Path $env:RUNNER_TEMP "cargo"
+
           $paths = @(
             "$env:USERPROFILE\AppData",
             "$env:USERPROFILE\AppData\Local",
             "$env:USERPROFILE\AppData\Roaming",
-            "$env:PUB_CACHE",
-            "$env:CARGO_HOME"
+            $pubCache,
+            $cargoHome
           )
           foreach ($path in $paths) {
             New-Item -ItemType Directory -Force -Path $path | Out-Null
           }
+
+          "PUB_CACHE=$pubCache" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CARGO_HOME=$cargoHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Package release
         shell: pwsh
