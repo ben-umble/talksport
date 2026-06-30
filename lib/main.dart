@@ -8,6 +8,9 @@ import 'package:just_audio_media_kit/just_audio_media_kit.dart';
 
 import 'src/app.dart';
 import 'src/data/progress_store.dart';
+import 'src/data/station_repository.dart';
+import 'src/data/talksport_api.dart';
+import 'src/playback/playback_item_refresher.dart';
 import 'src/playback/talksport_audio_handler.dart';
 import 'src/playback/windows_media_controls.dart';
 import 'src/providers.dart';
@@ -21,12 +24,23 @@ Future<void> main() async {
   }
 
   final progressStore = await ProgressStore.create();
-  final audioHandler = await _createPlaybackHandler(progressStore);
+  const stationRepository = StationRepository();
+  final talkSportApi = TalkSportApi();
+  final playbackItemRefresher = PlaybackItemRefresher(
+    api: talkSportApi,
+    stationRepository: stationRepository,
+  );
+  final audioHandler = await _createPlaybackHandler(
+    progressStore,
+    playbackItemRefresher,
+  );
   WidgetsBinding.instance.addObserver(_PlaybackLifecycleObserver(audioHandler));
 
   runApp(
     ProviderScope(
       overrides: [
+        stationRepositoryProvider.overrideWithValue(stationRepository),
+        talkSportApiProvider.overrideWithValue(talkSportApi),
         progressStoreProvider.overrideWithValue(progressStore),
         playbackControllerProvider.overrideWithValue(audioHandler),
       ],
@@ -59,10 +73,15 @@ class _PlaybackLifecycleObserver with WidgetsBindingObserver {
 
 Future<TalkSportAudioHandler> _createPlaybackHandler(
   ProgressStore progressStore,
+  PlaybackItemRefresher playbackItemRefresher,
 ) async {
   if (Platform.isAndroid) {
     return AudioService.init<TalkSportAudioHandler>(
-      builder: () => TalkSportAudioHandler(progressStore, null),
+      builder: () => TalkSportAudioHandler(
+        progressStore,
+        null,
+        refreshItem: playbackItemRefresher.refresh,
+      ),
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'dev.ben.talksport.audio',
         androidNotificationChannelName: 'talkSPORT playback',
@@ -76,6 +95,7 @@ Future<TalkSportAudioHandler> _createPlaybackHandler(
   return TalkSportAudioHandler(
     progressStore,
     null,
+    refreshItem: playbackItemRefresher.refresh,
     configureSession: false,
   );
 }

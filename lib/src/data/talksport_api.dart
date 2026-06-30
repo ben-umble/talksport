@@ -40,12 +40,17 @@ class TalkSportApi {
   static const _cachedMetadataMaxAge = Duration(days: 7);
   static const _backgroundRefreshAfter = Duration(minutes: 2);
 
-  Future<List<ScheduleDay>> fetchSchedule(String stationSlug) async {
+  Future<List<ScheduleDay>> fetchSchedule(
+    String stationSlug, {
+    bool allowCached = true,
+  }) async {
     final cache = _scheduleCache[stationSlug];
-    final cached = await _cachedPagePayload(stationSlug);
-    if (cached != null) {
-      _refreshMetadataInBackground(stationSlug, cached);
-      return cached.payload.schedule;
+    if (allowCached) {
+      final cached = await _cachedPagePayload(stationSlug);
+      if (cached != null) {
+        _refreshMetadataInBackground(stationSlug, cached);
+        return cached.payload.schedule;
+      }
     }
 
     final pagePayload = await _fetchPagePayload(stationSlug);

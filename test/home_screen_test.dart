@@ -114,7 +114,10 @@ class _FakePlaybackController implements PlaybackController {
 
 class _FakeTalkSportApi extends TalkSportApi {
   @override
-  Future<List<ScheduleDay>> fetchSchedule(String stationSlug) async {
+  Future<List<ScheduleDay>> fetchSchedule(
+    String stationSlug, {
+    bool allowCached = true,
+  }) async {
     return [
       ScheduleDay(
         date: '2026-06-29',
@@ -155,11 +158,7 @@ class _FakeTalkSportApi extends TalkSportApi {
   }
 }
 
-Show _show({
-  required String id,
-  required String title,
-  Recording? recording,
-}) {
+Show _show({required String id, required String title, Recording? recording}) {
   return Show(
     id: id,
     title: title,

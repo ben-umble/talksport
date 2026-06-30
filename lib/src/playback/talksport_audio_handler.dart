@@ -17,6 +17,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
   TalkSportAudioHandler(
     this._progressStore,
     MediaControlsBridge? mediaControls, {
+    this.refreshItem,
     bool configureSession = true,
   }) : _mediaControls = mediaControls {
     if (configureSession) {
@@ -45,6 +46,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
 
   final ProgressStore _progressStore;
   MediaControlsBridge? _mediaControls;
+  final Future<PlaybackItem?> Function(PlaybackItem item)? refreshItem;
   final AudioPlayer _player = AudioPlayer();
   @override
   final ValueNotifier<PlaybackItem?> currentItem = ValueNotifier(null);
@@ -97,9 +99,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
       final media = item.toMediaItem();
       mediaItem.add(media);
       await _mediaControls?.updateItem(item);
-      await _player.setAudioSource(
-        AudioSource.uri(Uri.parse(item.audioUrl), tag: media),
-      );
+      item = await _setAudioSourceWithRetry(item, media);
       final saved = item.isCatchUp ? _progressStore.progressFor(item.id) : null;
       final resume = saved?.position ?? Duration.zero;
       final knownDuration = item.duration ?? _player.duration;
@@ -112,7 +112,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
       _loadingItem = false;
     }
     if (playWhenReady) {
-      await play();
+      await _player.play();
     } else {
       await _mediaControls?.updatePlaybackStatus(playing: false);
     }
@@ -127,7 +127,18 @@ class TalkSportAudioHandler extends BaseAudioHandler
   }
 
   @override
-  Future<void> play() => _player.play();
+  Future<void> play() async {
+    final item = currentItem.value;
+    final needsReload =
+        item != null &&
+        (_player.processingState == ProcessingState.idle ||
+            playbackState.value.processingState == AudioProcessingState.error);
+    if (needsReload) {
+      await _loadItem(item, playWhenReady: true);
+      return;
+    }
+    await _player.play();
+  }
 
   @override
   Future<void> pause() => _player.pause();
@@ -285,5 +296,47 @@ class TalkSportAudioHandler extends BaseAudioHandler
       ProcessingState.ready => AudioProcessingState.ready,
       ProcessingState.completed => AudioProcessingState.completed,
     };
+  }
+
+  Future<PlaybackItem> _setAudioSourceWithRetry(
+    PlaybackItem item,
+    MediaItem media,
+  ) async {
+    try {
+      await _player.setAudioSource(
+        AudioSource.uri(Uri.parse(item.audioUrl), tag: media),
+      );
+      return item;
+    } catch (_) {
+      final refreshed = await _tryRefreshItem(item);
+      if (refreshed == null ||
+          refreshed.audioUrl.isEmpty ||
+          refreshed.audioUrl == item.audioUrl) {
+        rethrow;
+      }
+
+      currentItem.value = refreshed;
+      final refreshedMedia = refreshed.toMediaItem();
+      mediaItem.add(refreshedMedia);
+      await _mediaControls?.updateItem(refreshed);
+      await _player.setAudioSource(
+        AudioSource.uri(Uri.parse(refreshed.audioUrl), tag: refreshedMedia),
+      );
+      return refreshed;
+    }
+  }
+
+  Future<PlaybackItem?> _tryRefreshItem(PlaybackItem item) async {
+    final refresh = refreshItem;
+    if (refresh == null || !item.isCatchUp) {
+      return null;
+    }
+    try {
+      return await refresh(item);
+    } catch (error, stackTrace) {
+      debugPrint('Could not refresh playback item: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      return null;
+    }
   }
 }
