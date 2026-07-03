@@ -73,6 +73,73 @@ void main() {
     expect(client.requests, 0);
     expect(await rootDirectory.list().isEmpty, isTrue);
   });
+
+  test('removes cache files older than the retention period', () async {
+    final now = DateTime.utc(2026, 7, 3, 12);
+    final cache = CatchUpDownloadCache(rootDirectory: rootDirectory);
+    addTearDown(cache.dispose);
+
+    final expired = File(
+      '${rootDirectory.path}${Platform.pathSeparator}old.mp3',
+    )..writeAsBytesSync([1]);
+    final expiredMarker = File('${expired.path}.complete')
+      ..writeAsStringSync(
+        now.subtract(const Duration(days: 8)).toIso8601String(),
+      );
+
+    final fresh = File(
+      '${rootDirectory.path}${Platform.pathSeparator}fresh.mp3',
+    )..writeAsBytesSync([2]);
+    final freshMarker = File('${fresh.path}.complete')
+      ..writeAsStringSync(
+        now.subtract(const Duration(days: 6)).toIso8601String(),
+      );
+
+    final orphanMarker = File(
+      '${rootDirectory.path}${Platform.pathSeparator}orphan.mp3.complete',
+    )..writeAsStringSync(now.toIso8601String());
+    final markerlessAudio = File(
+      '${rootDirectory.path}${Platform.pathSeparator}markerless.mp3',
+    )..writeAsBytesSync([3]);
+    final leftoverPart = File(
+      '${rootDirectory.path}${Platform.pathSeparator}download.mp3.part',
+    )..writeAsBytesSync([4]);
+    final oldOrphanModified = now.subtract(const Duration(hours: 2));
+    await markerlessAudio.setLastModified(oldOrphanModified);
+    await leftoverPart.setLastModified(oldOrphanModified);
+
+    final deleted = await cache.cleanExpired(now: now);
+
+    expect(deleted, 5);
+    expect(await expired.exists(), isFalse);
+    expect(await expiredMarker.exists(), isFalse);
+    expect(await fresh.exists(), isTrue);
+    expect(await freshMarker.exists(), isTrue);
+    expect(await orphanMarker.exists(), isFalse);
+    expect(await markerlessAudio.exists(), isFalse);
+    expect(await leftoverPart.exists(), isFalse);
+  });
+
+  test('does not return expired cached audio', () async {
+    final item = _catchUpItem();
+    final expiredAt = DateTime.now().toUtc().subtract(
+      CatchUpDownloadCache.defaultRetention + const Duration(days: 1),
+    );
+    final cache = CatchUpDownloadCache(rootDirectory: rootDirectory);
+    addTearDown(cache.dispose);
+
+    final file = await cache.fileFor(item);
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes([1, 2, 3]);
+    final marker = File('${file.path}.complete');
+    await marker.writeAsString(expiredAt.toIso8601String());
+
+    final cached = await cache.cachedFileFor(item);
+
+    expect(cached, isNull);
+    expect(await file.exists(), isFalse);
+    expect(await marker.exists(), isFalse);
+  });
 }
 
 class _StreamingAudioClient extends http.BaseClient {

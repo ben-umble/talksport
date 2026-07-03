@@ -34,6 +34,7 @@ Future<void> main() async {
   final downloadCache = CatchUpDownloadCache(
     rootDirectory: await CatchUpDownloadCache.defaultRootDirectory(),
   );
+  unawaited(_cleanExpiredCatchUpAudio(downloadCache));
   final audioHandler = await _createPlaybackHandler(
     progressStore,
     playbackItemRefresher,
@@ -57,6 +58,17 @@ Future<void> main() async {
 
   if (Platform.isWindows) {
     _attachWindowsMediaControls(audioHandler);
+  }
+}
+
+Future<void> _cleanExpiredCatchUpAudio(
+  CatchUpDownloadCache downloadCache,
+) async {
+  try {
+    await downloadCache.cleanExpired();
+  } catch (error, stackTrace) {
+    debugPrint('Could not clean cached catch-up audio: $error');
+    debugPrintStack(stackTrace: stackTrace);
   }
 }
 
