@@ -980,6 +980,9 @@ class _TransportCluster extends StatelessWidget {
       padding: EdgeInsets.symmetric(horizontal: compact ? 4 : 8),
       child: _RoundPlayButton(
         playing: state.playing,
+        busy:
+            state.processingState == AudioProcessingState.loading ||
+            state.processingState == AudioProcessingState.buffering,
         onPressed: state.playing ? handler.pause : handler.play,
         size: compact ? 46 : 56,
       ),
@@ -1293,11 +1296,13 @@ class _RoundPlayButton extends StatelessWidget {
   const _RoundPlayButton({
     required this.playing,
     required this.onPressed,
+    this.busy = false,
     this.size = 56,
   });
 
   final bool playing;
   final VoidCallback onPressed;
+  final bool busy;
   final double size;
 
   @override
@@ -1314,7 +1319,16 @@ class _RoundPlayButton extends StatelessWidget {
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
         ),
         iconSize: size >= 56 ? 32 : 28,
-        icon: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
+        icon: busy
+            ? SizedBox(
+                width: size >= 56 ? 24 : 20,
+                height: size >= 56 ? 24 : 20,
+                child: const CircularProgressIndicator(
+                  strokeWidth: 2.6,
+                  color: Colors.white,
+                ),
+              )
+            : Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
       ),
     );
   }

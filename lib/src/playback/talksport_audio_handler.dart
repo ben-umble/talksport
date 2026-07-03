@@ -33,6 +33,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
             errorMessage: error.toString(),
           ),
         );
+        unawaited(_recoverPlayback('player error: $error'));
       },
     );
     _durationSubscription = _player.durationStream.listen((duration) {
@@ -42,6 +43,10 @@ class TalkSportAudioHandler extends BaseAudioHandler
       }
     });
     _positionSubscription = _player.positionStream.listen(_onPositionChanged);
+    _stallWatchdog = Timer.periodic(
+      _stallCheckInterval,
+      (_) => _recoverIfStalled(),
+    );
   }
 
   final ProgressStore _progressStore;
@@ -53,10 +58,20 @@ class TalkSportAudioHandler extends BaseAudioHandler
   late final StreamSubscription<PlaybackEvent> _playbackSubscription;
   late final StreamSubscription<Duration?> _durationSubscription;
   late final StreamSubscription<Duration> _positionSubscription;
+  late final Timer _stallWatchdog;
   DateTime _lastProgressSave = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastPositionAdvancedAt = DateTime.now();
+  Duration _lastWatchdogPosition = Duration.zero;
   Duration _restoredPosition = Duration.zero;
   bool _loadingItem = false;
+  bool _recovering = false;
   bool _sourceLoaded = false;
+  int _recoveryAttempt = 0;
+  Timer? _recoveryRetryTimer;
+
+  static const _stallCheckInterval = Duration(seconds: 5);
+  static const _stallRecoveryAfter = Duration(seconds: 15);
+  static const _maxAutomaticRecoveryAttempts = 3;
 
   @override
   Stream<PlaybackState> get playbackStateStream => playbackState;
@@ -106,6 +121,8 @@ class TalkSportAudioHandler extends BaseAudioHandler
     _sourceLoaded = false;
     try {
       currentItem.value = item;
+      _lastPositionAdvancedAt = DateTime.now();
+      _lastWatchdogPosition = resumeOverride ?? _restoredPosition;
       final media = item.toMediaItem();
       mediaItem.add(media);
       await _mediaControls?.updateItem(item);
@@ -118,7 +135,9 @@ class TalkSportAudioHandler extends BaseAudioHandler
         await _player.seek(resume);
       }
       _restoredPosition = resume;
+      _lastWatchdogPosition = resume;
       await _progressStore.saveLastItem(item);
+      _recoveryAttempt = 0;
     } finally {
       _loadingItem = false;
     }
@@ -157,10 +176,14 @@ class TalkSportAudioHandler extends BaseAudioHandler
   }
 
   @override
-  Future<void> pause() => _player.pause();
+  Future<void> pause() async {
+    _recoveryRetryTimer?.cancel();
+    await _player.pause();
+  }
 
   @override
   Future<void> stop() async {
+    _recoveryRetryTimer?.cancel();
     await _saveProgress(force: true);
     await _player.stop();
     _sourceLoaded = false;
@@ -223,6 +246,8 @@ class TalkSportAudioHandler extends BaseAudioHandler
   }
 
   Future<void> dispose() async {
+    _recoveryRetryTimer?.cancel();
+    _stallWatchdog.cancel();
     await _saveProgress(force: true);
     await _playbackSubscription.cancel();
     await _durationSubscription.cancel();
@@ -300,6 +325,11 @@ class TalkSportAudioHandler extends BaseAudioHandler
     final item = currentItem.value;
     if (item?.isCatchUp ?? false) {
       _restoredPosition = position;
+      if (position > _lastWatchdogPosition) {
+        _lastWatchdogPosition = position;
+        _lastPositionAdvancedAt = DateTime.now();
+        _recoveryAttempt = 0;
+      }
     }
     unawaited(
       _mediaControls?.updateTimeline(
@@ -331,6 +361,8 @@ class TalkSportAudioHandler extends BaseAudioHandler
     final saved = _progressStore.progressFor(item.id);
     final resume = saved?.position ?? Duration.zero;
     _restoredPosition = resume;
+    _lastWatchdogPosition = resume;
+    _lastPositionAdvancedAt = DateTime.now();
     _sourceLoaded = false;
     _broadcastIdlePlaybackState(item, resume);
     await _mediaControls?.updateItem(item);
@@ -374,6 +406,114 @@ class TalkSportAudioHandler extends BaseAudioHandler
       ProcessingState.ready => AudioProcessingState.ready,
       ProcessingState.completed => AudioProcessingState.completed,
     };
+  }
+
+  void _recoverIfStalled() {
+    final item = currentItem.value;
+    if (item == null ||
+        item.isLive ||
+        _loadingItem ||
+        _recovering ||
+        !_sourceLoaded ||
+        !_player.playing ||
+        _player.processingState == ProcessingState.completed) {
+      return;
+    }
+
+    final currentDuration = duration;
+    final currentPosition = position;
+    if (currentDuration != null &&
+        currentPosition >= currentDuration - const Duration(seconds: 2)) {
+      return;
+    }
+
+    final stalledFor = DateTime.now().difference(_lastPositionAdvancedAt);
+    if (stalledFor < _stallRecoveryAfter) {
+      return;
+    }
+
+    unawaited(
+      _recoverPlayback('position stalled for ${stalledFor.inSeconds}s'),
+    );
+  }
+
+  Future<void> _recoverPlayback(String reason) async {
+    final item = currentItem.value;
+    if (item == null || item.isLive || _loadingItem || _recovering) {
+      return;
+    }
+
+    final resume = position;
+    _recovering = true;
+    _recoveryRetryTimer?.cancel();
+    debugPrint(
+      'Recovering playback after $reason at ${resume.inMilliseconds}ms',
+    );
+
+    try {
+      _restoredPosition = resume;
+      await _progressStore.saveProgress(item, resume);
+      await _player.stop();
+      _sourceLoaded = false;
+      _broadcastRecoveringPlaybackState(item, resume);
+      await _loadItem(item, playWhenReady: true, resumeOverride: resume);
+    } catch (error, stackTrace) {
+      _sourceLoaded = false;
+      _restoredPosition = resume;
+      _recoveryAttempt += 1;
+      playbackState.add(
+        playbackState.value.copyWith(
+          processingState: AudioProcessingState.error,
+          playing: false,
+          updatePosition: resume,
+          errorMessage: error.toString(),
+        ),
+      );
+      debugPrint('Playback recovery failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      _scheduleRecoveryRetry(item, resume);
+    } finally {
+      _recovering = false;
+    }
+  }
+
+  void _scheduleRecoveryRetry(PlaybackItem item, Duration resume) {
+    if (_recoveryAttempt > _maxAutomaticRecoveryAttempts) {
+      return;
+    }
+
+    final delay = Duration(seconds: 2 * _recoveryAttempt);
+    _recoveryRetryTimer = Timer(delay, () {
+      if (currentItem.value?.id != item.id) {
+        return;
+      }
+      _restoredPosition = resume;
+      unawaited(_recoverPlayback('automatic retry $_recoveryAttempt'));
+    });
+  }
+
+  void _broadcastRecoveringPlaybackState(PlaybackItem item, Duration position) {
+    playbackState.add(
+      playbackState.value.copyWith(
+        controls: [
+          if (item.isCatchUp) MediaControl.rewind,
+          MediaControl.pause,
+          if (item.isCatchUp) MediaControl.fastForward,
+          MediaControl.stop,
+        ],
+        systemActions: {
+          if (item.isCatchUp) MediaAction.seek,
+          if (item.isCatchUp) MediaAction.seekBackward,
+          if (item.isCatchUp) MediaAction.seekForward,
+        },
+        androidCompactActionIndices: item.isCatchUp
+            ? const [0, 1, 2]
+            : const [0, 1],
+        processingState: AudioProcessingState.loading,
+        playing: true,
+        updatePosition: position,
+      ),
+    );
   }
 
   Future<PlaybackItem> _setAudioSourceWithRetry(
