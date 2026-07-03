@@ -10,6 +10,7 @@ import 'src/app.dart';
 import 'src/data/progress_store.dart';
 import 'src/data/station_repository.dart';
 import 'src/data/talksport_api.dart';
+import 'src/playback/catch_up_download_cache.dart';
 import 'src/playback/playback_item_refresher.dart';
 import 'src/playback/talksport_audio_handler.dart';
 import 'src/playback/windows_media_controls.dart';
@@ -30,9 +31,13 @@ Future<void> main() async {
     api: talkSportApi,
     stationRepository: stationRepository,
   );
+  final downloadCache = CatchUpDownloadCache(
+    rootDirectory: await CatchUpDownloadCache.defaultRootDirectory(),
+  );
   final audioHandler = await _createPlaybackHandler(
     progressStore,
     playbackItemRefresher,
+    downloadCache,
   );
   WidgetsBinding.instance.addObserver(_PlaybackLifecycleObserver(audioHandler));
 
@@ -74,6 +79,7 @@ class _PlaybackLifecycleObserver with WidgetsBindingObserver {
 Future<TalkSportAudioHandler> _createPlaybackHandler(
   ProgressStore progressStore,
   PlaybackItemRefresher playbackItemRefresher,
+  CatchUpDownloadCache downloadCache,
 ) async {
   if (Platform.isAndroid) {
     return AudioService.init<TalkSportAudioHandler>(
@@ -81,6 +87,7 @@ Future<TalkSportAudioHandler> _createPlaybackHandler(
         progressStore,
         null,
         refreshItem: playbackItemRefresher.refresh,
+        downloadCache: downloadCache,
       ),
       config: const AudioServiceConfig(
         androidNotificationChannelId: 'dev.ben.talksport.audio',
@@ -96,6 +103,7 @@ Future<TalkSportAudioHandler> _createPlaybackHandler(
     progressStore,
     null,
     refreshItem: playbackItemRefresher.refresh,
+    downloadCache: downloadCache,
     configureSession: false,
   );
 }

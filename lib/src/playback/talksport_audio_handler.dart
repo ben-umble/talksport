@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:audio_service/audio_service.dart';
 import 'package:audio_session/audio_session.dart';
@@ -8,6 +9,7 @@ import 'package:just_audio/just_audio.dart';
 import '../data/progress_store.dart';
 import '../models/playback_item.dart';
 import '../util/playback_math.dart';
+import 'catch_up_download_cache.dart';
 import 'media_controls_bridge.dart';
 import 'playback_controller.dart';
 
@@ -18,6 +20,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
     this._progressStore,
     MediaControlsBridge? mediaControls, {
     this.refreshItem,
+    this.downloadCache,
     bool configureSession = true,
   }) : _mediaControls = mediaControls {
     if (configureSession) {
@@ -52,6 +55,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
   final ProgressStore _progressStore;
   MediaControlsBridge? _mediaControls;
   final Future<PlaybackItem?> Function(PlaybackItem item)? refreshItem;
+  final CatchUpDownloadCache? downloadCache;
   final AudioPlayer _player = AudioPlayer();
   @override
   final ValueNotifier<PlaybackItem?> currentItem = ValueNotifier(null);
@@ -66,6 +70,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
   bool _loadingItem = false;
   bool _recovering = false;
   bool _sourceLoaded = false;
+  String? _activeCachePath;
   int _recoveryAttempt = 0;
   Timer? _recoveryRetryTimer;
 
@@ -119,6 +124,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
     }
     _loadingItem = true;
     _sourceLoaded = false;
+    _activeCachePath = null;
     try {
       currentItem.value = item;
       _lastPositionAdvancedAt = DateTime.now();
@@ -187,6 +193,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
     await _saveProgress(force: true);
     await _player.stop();
     _sourceLoaded = false;
+    _activeCachePath = null;
     currentItem.value = null;
     await _mediaControls?.updatePlaybackStatus(playing: false);
     await super.stop();
@@ -254,6 +261,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
     await _positionSubscription.cancel();
     await _player.dispose();
     await _mediaControls?.dispose();
+    downloadCache?.dispose();
     currentItem.dispose();
   }
 
@@ -319,7 +327,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
   }
 
   void _onPositionChanged(Duration position) {
-    if (!_sourceLoaded) {
+    if (!_sourceLoaded || _loadingItem) {
       return;
     }
     final item = currentItem.value;
@@ -455,6 +463,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
       await _progressStore.saveProgress(item, resume);
       await _player.stop();
       _sourceLoaded = false;
+      _activeCachePath = null;
       _broadcastRecoveringPlaybackState(item, resume);
       await _loadItem(item, playWhenReady: true, resumeOverride: resume);
     } catch (error, stackTrace) {
@@ -520,11 +529,15 @@ class TalkSportAudioHandler extends BaseAudioHandler
     PlaybackItem item,
     MediaItem media,
   ) async {
+    final cached = await _cachedFileFor(item);
+    if (cached != null) {
+      await _setCachedAudioSource(cached, media);
+      return item;
+    }
+
     try {
-      await _player.setAudioSource(
-        AudioSource.uri(Uri.parse(item.audioUrl), tag: media),
-      );
-      _sourceLoaded = true;
+      await _setRemoteAudioSource(item, media);
+      _startBackgroundDownload(item);
       return item;
     } catch (_) {
       final refreshed = await _tryRefreshItem(item);
@@ -538,11 +551,101 @@ class TalkSportAudioHandler extends BaseAudioHandler
       final refreshedMedia = refreshed.toMediaItem();
       mediaItem.add(refreshedMedia);
       await _mediaControls?.updateItem(refreshed);
-      await _player.setAudioSource(
-        AudioSource.uri(Uri.parse(refreshed.audioUrl), tag: refreshedMedia),
-      );
-      _sourceLoaded = true;
+      final refreshedCached = await _cachedFileFor(refreshed);
+      if (refreshedCached != null) {
+        await _setCachedAudioSource(refreshedCached, refreshedMedia);
+        return refreshed;
+      }
+
+      await _setRemoteAudioSource(refreshed, refreshedMedia);
+      _startBackgroundDownload(refreshed);
       return refreshed;
+    }
+  }
+
+  Future<File?> _cachedFileFor(PlaybackItem item) async {
+    try {
+      return await downloadCache?.cachedFileFor(item);
+    } catch (error, stackTrace) {
+      debugPrint('Could not inspect cached audio: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      return null;
+    }
+  }
+
+  Future<void> _setRemoteAudioSource(PlaybackItem item, MediaItem media) async {
+    await _player.setAudioSource(
+      AudioSource.uri(Uri.parse(item.audioUrl), tag: media),
+    );
+    _sourceLoaded = true;
+    _activeCachePath = null;
+  }
+
+  Future<void> _setCachedAudioSource(File file, MediaItem media) async {
+    await _player.setAudioSource(AudioSource.uri(file.uri, tag: media));
+    _sourceLoaded = true;
+    _activeCachePath = file.path;
+  }
+
+  void _startBackgroundDownload(PlaybackItem item) {
+    downloadCache?.ensureDownloadStarted(
+      item,
+      onComplete: (file) {
+        unawaited(_switchToCachedFileWhenReady(item, file));
+      },
+    );
+  }
+
+  Future<void> _switchToCachedFileWhenReady(
+    PlaybackItem item,
+    File file,
+  ) async {
+    for (var attempt = 0; attempt < 10 && _loadingItem; attempt += 1) {
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    await _switchToCachedFileIfCurrent(item, file);
+  }
+
+  Future<void> _switchToCachedFileIfCurrent(
+    PlaybackItem item,
+    File file,
+  ) async {
+    if (currentItem.value?.id != item.id ||
+        !item.isCatchUp ||
+        !_sourceLoaded ||
+        _loadingItem ||
+        _recovering ||
+        _activeCachePath == file.path ||
+        !await file.exists()) {
+      return;
+    }
+
+    final resume = position;
+    final wasPlaying = _player.playing;
+    final media = mediaItem.valueOrNull ?? item.toMediaItem();
+    _loadingItem = true;
+    try {
+      debugPrint('Switching catch-up playback to cached audio: ${file.path}');
+      await _setCachedAudioSource(file, media);
+      final knownDuration = duration;
+      if (resume > Duration.zero &&
+          (knownDuration == null || resume < knownDuration)) {
+        await _player.seek(resume);
+      }
+      _restoredPosition = resume;
+      _lastWatchdogPosition = resume;
+      _lastPositionAdvancedAt = DateTime.now();
+      await _progressStore.saveProgress(item, resume);
+      if (wasPlaying && currentItem.value?.id == item.id) {
+        await _player.play();
+      } else {
+        await _mediaControls?.updatePlaybackStatus(playing: false);
+      }
+    } catch (error, stackTrace) {
+      debugPrint('Could not switch to cached audio: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    } finally {
+      _loadingItem = false;
     }
   }
 
