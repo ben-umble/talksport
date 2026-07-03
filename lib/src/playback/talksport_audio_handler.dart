@@ -56,6 +56,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
   DateTime _lastProgressSave = DateTime.fromMillisecondsSinceEpoch(0);
   Duration _restoredPosition = Duration.zero;
   bool _loadingItem = false;
+  bool _sourceLoaded = false;
 
   @override
   Stream<PlaybackState> get playbackStateStream => playbackState;
@@ -70,7 +71,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
 
   @override
   Duration get position {
-    if (_player.processingState == ProcessingState.idle ||
+    if (!_sourceLoaded ||
         playbackState.value.processingState == AudioProcessingState.error) {
       return _restoredPosition;
     }
@@ -96,11 +97,13 @@ class TalkSportAudioHandler extends BaseAudioHandler
   Future<void> _loadItem(
     PlaybackItem item, {
     required bool playWhenReady,
+    Duration? resumeOverride,
   }) async {
     if (item.audioUrl.isEmpty) {
       throw StateError('No audio URL is available for ${item.title}.');
     }
     _loadingItem = true;
+    _sourceLoaded = false;
     try {
       currentItem.value = item;
       final media = item.toMediaItem();
@@ -108,7 +111,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
       await _mediaControls?.updateItem(item);
       item = await _setAudioSourceWithRetry(item, media);
       final saved = item.isCatchUp ? _progressStore.progressFor(item.id) : null;
-      final resume = saved?.position ?? Duration.zero;
+      final resume = resumeOverride ?? saved?.position ?? Duration.zero;
       final knownDuration = item.duration ?? _player.duration;
       if (resume > Duration.zero &&
           (knownDuration == null || resume < knownDuration)) {
@@ -139,10 +142,15 @@ class TalkSportAudioHandler extends BaseAudioHandler
     final item = currentItem.value;
     final needsReload =
         item != null &&
-        (_player.processingState == ProcessingState.idle ||
+        (!_sourceLoaded ||
+            _player.processingState == ProcessingState.idle ||
             playbackState.value.processingState == AudioProcessingState.error);
     if (needsReload) {
-      await _loadItem(item, playWhenReady: true);
+      final resume = item.isCatchUp ? position : null;
+      if (resume != null) {
+        await _progressStore.saveProgress(item, resume);
+      }
+      await _loadItem(item, playWhenReady: true, resumeOverride: resume);
       return;
     }
     await _player.play();
@@ -155,6 +163,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
   Future<void> stop() async {
     await _saveProgress(force: true);
     await _player.stop();
+    _sourceLoaded = false;
     currentItem.value = null;
     await _mediaControls?.updatePlaybackStatus(playing: false);
     await super.stop();
@@ -166,7 +175,8 @@ class TalkSportAudioHandler extends BaseAudioHandler
     if (item?.isLive ?? true) {
       return;
     }
-    if (_player.processingState == ProcessingState.idle ||
+    if (!_sourceLoaded ||
+        _player.processingState == ProcessingState.idle ||
         playbackState.value.processingState == AudioProcessingState.error) {
       _restoredPosition = position;
       await _progressStore.saveProgress(item!, position);
@@ -238,7 +248,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
       await mediaControls.updateItem(item);
       await mediaControls.updatePlaybackStatus(playing: _player.playing);
       await mediaControls.updateTimeline(
-        position: _player.position,
+        position: position,
         duration: duration,
         seekable: item.isCatchUp,
       );
@@ -284,7 +294,13 @@ class TalkSportAudioHandler extends BaseAudioHandler
   }
 
   void _onPositionChanged(Duration position) {
+    if (!_sourceLoaded) {
+      return;
+    }
     final item = currentItem.value;
+    if (item?.isCatchUp ?? false) {
+      _restoredPosition = position;
+    }
     unawaited(
       _mediaControls?.updateTimeline(
         position: position,
@@ -315,6 +331,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
     final saved = _progressStore.progressFor(item.id);
     final resume = saved?.position ?? Duration.zero;
     _restoredPosition = resume;
+    _sourceLoaded = false;
     _broadcastIdlePlaybackState(item, resume);
     await _mediaControls?.updateItem(item);
     await _mediaControls?.updatePlaybackStatus(playing: false);
@@ -367,6 +384,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
       await _player.setAudioSource(
         AudioSource.uri(Uri.parse(item.audioUrl), tag: media),
       );
+      _sourceLoaded = true;
       return item;
     } catch (_) {
       final refreshed = await _tryRefreshItem(item);
@@ -383,6 +401,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
       await _player.setAudioSource(
         AudioSource.uri(Uri.parse(refreshed.audioUrl), tag: refreshedMedia),
       );
+      _sourceLoaded = true;
       return refreshed;
     }
   }
