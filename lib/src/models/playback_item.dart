@@ -18,6 +18,7 @@ class PlaybackItem {
     required this.audioUrl,
     required this.imageUrl,
     required this.duration,
+    this.showDate,
   });
 
   factory PlaybackItem.live(Station station, NowPlaying nowPlaying) {
@@ -32,6 +33,7 @@ class PlaybackItem {
       audioUrl: station.liveStreamUrl,
       imageUrl: nowPlaying.thumbnailUrl,
       duration: null,
+      showDate: null,
     );
   }
 
@@ -48,11 +50,13 @@ class PlaybackItem {
       audioUrl: recording?.url ?? '',
       imageUrl: show.thumbnailUrl,
       duration: recording?.durationValue,
+      showDate: show.startTime,
     );
   }
 
   factory PlaybackItem.fromJson(Map<String, dynamic> json) {
     final durationMs = json['durationMs'] as int?;
+    final showDate = _showDateFromJson(json);
     return PlaybackItem(
       id: json['id'] as String,
       kind: PlaybackKind.values.byName(json['kind'] as String),
@@ -64,6 +68,7 @@ class PlaybackItem {
       audioUrl: json['audioUrl'] as String,
       imageUrl: json['imageUrl'] as String?,
       duration: durationMs == null ? null : Duration(milliseconds: durationMs),
+      showDate: showDate,
     );
   }
 
@@ -77,6 +82,7 @@ class PlaybackItem {
   final String audioUrl;
   final String? imageUrl;
   final Duration? duration;
+  final DateTime? showDate;
 
   bool get isLive => kind == PlaybackKind.live;
   bool get isCatchUp => kind == PlaybackKind.catchUp;
@@ -90,11 +96,7 @@ class PlaybackItem {
       album: stationName,
       duration: duration,
       artUri: art == null || art.isEmpty ? null : Uri.tryParse(art),
-      extras: {
-        'playbackId': id,
-        'kind': kind.name,
-        'stationSlug': stationSlug,
-      },
+      extras: {'playbackId': id, 'kind': kind.name, 'stationSlug': stationSlug},
     );
   }
 
@@ -110,6 +112,28 @@ class PlaybackItem {
       'audioUrl': audioUrl,
       'imageUrl': imageUrl,
       'durationMs': duration?.inMilliseconds,
+      'showDate': showDate?.toIso8601String(),
     };
+  }
+
+  static DateTime? _showDateFromJson(Map<String, dynamic> json) {
+    final raw = json['showDate'] as String?;
+    if (raw != null && raw.isNotEmpty) {
+      return DateTime.tryParse(raw);
+    }
+
+    final id = json['id'] as String? ?? '';
+    final match = RegExp(r'^(\d{4})(\d{2})(\d{2})').firstMatch(id);
+    if (match == null) {
+      return null;
+    }
+
+    final year = int.tryParse(match.group(1)!);
+    final month = int.tryParse(match.group(2)!);
+    final day = int.tryParse(match.group(3)!);
+    if (year == null || month == null || day == null) {
+      return null;
+    }
+    return DateTime.utc(year, month, day);
   }
 }

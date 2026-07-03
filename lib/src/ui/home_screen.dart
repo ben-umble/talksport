@@ -12,6 +12,7 @@ import '../models/show.dart';
 import '../models/station.dart';
 import '../playback/playback_controller.dart';
 import '../providers.dart';
+import '../util/playback_math.dart';
 import '../util/show_filters.dart';
 import '../util/timecode.dart';
 
@@ -78,7 +79,12 @@ class _ContentScaffold extends ConsumerWidget {
         child: CustomScrollView(
           slivers: [
             SliverPadding(
-              padding: EdgeInsets.fromLTRB(wide ? 28 : 16, 18, wide ? 28 : 16, 18),
+              padding: EdgeInsets.fromLTRB(
+                wide ? 28 : 16,
+                18,
+                wide ? 28 : 16,
+                18,
+              ),
               sliver: SliverList.list(
                 children: [
                   if (!wide) ...[
@@ -102,10 +108,7 @@ class _ContentScaffold extends ConsumerWidget {
 }
 
 class _SideRail extends ConsumerWidget {
-  const _SideRail({
-    required this.station,
-    required this.stations,
-  });
+  const _SideRail({required this.station, required this.stations});
 
   final Station station;
   final List<Station> stations;
@@ -140,9 +143,9 @@ class _SideRail extends ConsumerWidget {
                 child: Text(
                   'talkSPORT',
                   style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w900,
-                      ),
+                    color: Colors.white,
+                    fontWeight: FontWeight.w900,
+                  ),
                 ),
               ),
             ],
@@ -151,9 +154,9 @@ class _SideRail extends ConsumerWidget {
           Text(
             'Stations',
             style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  color: Colors.white60,
-                  fontWeight: FontWeight.w700,
-                ),
+              color: Colors.white60,
+              fontWeight: FontWeight.w700,
+            ),
           ),
           const SizedBox(height: 10),
           for (final option in stations)
@@ -184,9 +187,9 @@ class _SideRail extends ConsumerWidget {
                   child: Text(
                     'Live and catch-up audio',
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w700,
-                        ),
+                      color: Colors.white,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
               ],
@@ -231,9 +234,9 @@ class _StationRailButton extends StatelessWidget {
                 child: Text(
                   station.name,
                   style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                        color: selected ? _ink : Colors.white,
-                        fontWeight: FontWeight.w800,
-                      ),
+                    color: selected ? _ink : Colors.white,
+                    fontWeight: FontWeight.w800,
+                  ),
                 ),
               ),
             ],
@@ -259,15 +262,15 @@ class _DesktopTopBar extends ConsumerWidget {
               Text(
                 station.name,
                 style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                      color: _ink,
-                      fontWeight: FontWeight.w900,
-                    ),
+                  color: _ink,
+                  fontWeight: FontWeight.w900,
+                ),
               ),
               Text(
                 DateFormat('EEEE d MMMM').format(DateTime.now()),
-                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: _mutedInk,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyLarge?.copyWith(color: _mutedInk),
               ),
             ],
           ),
@@ -286,10 +289,7 @@ class _DesktopTopBar extends ConsumerWidget {
 }
 
 class _MobileTopBar extends ConsumerWidget {
-  const _MobileTopBar({
-    required this.station,
-    required this.stations,
-  });
+  const _MobileTopBar({required this.station, required this.stations});
 
   final Station station;
   final List<Station> stations;
@@ -315,9 +315,9 @@ class _MobileTopBar extends ConsumerWidget {
             Expanded(
               child: Text(
                 'talkSPORT',
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w900,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w900),
               ),
             ),
             IconButton.filledTonal(
@@ -334,10 +334,7 @@ class _MobileTopBar extends ConsumerWidget {
         SegmentedButton<Station>(
           segments: [
             for (final option in stations)
-              ButtonSegment<Station>(
-                value: option,
-                label: Text(option.name),
-              ),
+              ButtonSegment<Station>(value: option, label: Text(option.name)),
           ],
           selected: {station},
           showSelectedIcon: false,
@@ -371,10 +368,7 @@ class _LiveHero extends ConsumerWidget {
 }
 
 class _LiveHeroContent extends ConsumerWidget {
-  const _LiveHeroContent({
-    required this.station,
-    required this.nowPlaying,
-  });
+  const _LiveHeroContent({required this.station, required this.nowPlaying});
 
   final Station station;
   final NowPlaying nowPlaying;
@@ -384,10 +378,14 @@ class _LiveHeroContent extends ConsumerWidget {
     return LayoutBuilder(
       builder: (context, constraints) {
         final compact = constraints.maxWidth < 820;
-        final art = _Artwork(url: nowPlaying.thumbnailUrl, size: compact ? 112 : 144);
+        final art = _Artwork(
+          url: nowPlaying.thumbnailUrl,
+          size: compact ? 112 : 144,
+        );
         final copy = Column(
-          crossAxisAlignment:
-              compact ? CrossAxisAlignment.center : CrossAxisAlignment.start,
+          crossAxisAlignment: compact
+              ? CrossAxisAlignment.center
+              : CrossAxisAlignment.start,
           children: [
             Wrap(
               alignment: compact ? WrapAlignment.center : WrapAlignment.start,
@@ -408,14 +406,15 @@ class _LiveHeroContent extends ConsumerWidget {
               maxLines: compact ? 4 : 3,
               overflow: TextOverflow.ellipsis,
               textAlign: compact ? TextAlign.center : TextAlign.start,
-              style: (compact
-                      ? Theme.of(context).textTheme.titleLarge
-                      : Theme.of(context).textTheme.headlineSmall)
-                  ?.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w900,
-                    height: 1.08,
-                  ),
+              style:
+                  (compact
+                          ? Theme.of(context).textTheme.titleLarge
+                          : Theme.of(context).textTheme.headlineSmall)
+                      ?.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                        height: 1.08,
+                      ),
             ),
             if (nowPlaying.description.isNotEmpty) ...[
               const SizedBox(height: 10),
@@ -424,9 +423,9 @@ class _LiveHeroContent extends ConsumerWidget {
                 maxLines: compact ? 3 : 2,
                 overflow: TextOverflow.ellipsis,
                 textAlign: compact ? TextAlign.center : TextAlign.start,
-                style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: Colors.white70,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyLarge?.copyWith(color: Colors.white70),
               ),
             ],
             const SizedBox(height: 20),
@@ -458,13 +457,7 @@ class _LiveHeroContent extends ConsumerWidget {
             border: Border.all(color: Colors.black),
           ),
           child: compact
-              ? Column(
-                  children: [
-                    art,
-                    const SizedBox(height: 18),
-                    copy,
-                  ],
-                )
+              ? Column(children: [art, const SizedBox(height: 18), copy])
               : Row(
                   children: [
                     art,
@@ -486,7 +479,8 @@ class _CatchUpBrowser extends ConsumerWidget {
     final station = ref.watch(selectedStationProvider);
     final schedule = ref.watch(scheduleProvider(station.slug));
     return schedule.when(
-      data: (days) => _CatchUpContent(station: station, days: catchUpDays(days)),
+      data: (days) =>
+          _CatchUpContent(station: station, days: catchUpDays(days)),
       loading: () => const _StatusPanel(height: 460),
       error: (error, stackTrace) => _StatusPanel(
         height: 460,
@@ -498,10 +492,7 @@ class _CatchUpBrowser extends ConsumerWidget {
 }
 
 class _CatchUpContent extends ConsumerWidget {
-  const _CatchUpContent({
-    required this.station,
-    required this.days,
-  });
+  const _CatchUpContent({required this.station, required this.days});
 
   final Station station;
   final List<ScheduleDay> days;
@@ -540,9 +531,7 @@ class _CatchUpContent extends ConsumerWidget {
                         children: [
                           Text(
                             'Catch-up',
-                            style: Theme.of(context)
-                                .textTheme
-                                .headlineSmall
+                            style: Theme.of(context).textTheme.headlineSmall
                                 ?.copyWith(
                                   color: _ink,
                                   fontWeight: FontWeight.w900,
@@ -551,10 +540,9 @@ class _CatchUpContent extends ConsumerWidget {
                           const SizedBox(height: 2),
                           Text(
                             '$availableCount available on ${_dayLabel(selectedDay)}',
-                            style: Theme.of(context)
-                                .textTheme
-                                .bodyMedium
-                                ?.copyWith(color: _mutedInk),
+                            style: Theme.of(
+                              context,
+                            ).textTheme.bodyMedium?.copyWith(color: _mutedInk),
                           ),
                         ],
                       ),
@@ -586,7 +574,9 @@ class _CatchUpContent extends ConsumerWidget {
                             day: day,
                             selected: day.dayNumber == selectedDay.dayNumber,
                             onTap: () {
-                              ref.read(selectedDayNumberProvider.notifier).state =
+                              ref
+                                      .read(selectedDayNumberProvider.notifier)
+                                      .state =
                                   day.dayNumber;
                             },
                           ),
@@ -636,7 +626,10 @@ class _SearchField extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
           borderSide: BorderSide.none,
         ),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 14,
+        ),
       ),
     );
   }
@@ -670,9 +663,9 @@ class _DayChip extends StatelessWidget {
               Text(
                 _dayLabel(day),
                 style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: selected ? Colors.white : _ink,
-                      fontWeight: FontWeight.w800,
-                    ),
+                  color: selected ? Colors.white : _ink,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
               const SizedBox(width: 8),
               Container(
@@ -684,9 +677,9 @@ class _DayChip extends StatelessWidget {
                 child: Text(
                   '$count',
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: _ink,
-                        fontWeight: FontWeight.w900,
-                      ),
+                    color: _ink,
+                    fontWeight: FontWeight.w900,
+                  ),
                 ),
               ),
             ],
@@ -698,10 +691,7 @@ class _DayChip extends StatelessWidget {
 }
 
 class _ShowTile extends ConsumerWidget {
-  const _ShowTile({
-    required this.station,
-    required this.show,
-  });
+  const _ShowTile({required this.station, required this.show});
 
   final Station station;
   final Show show;
@@ -734,7 +724,8 @@ class _ShowTile extends ConsumerWidget {
                     children: [
                       Text(
                         _formatRange(show.startTime, show.endTime),
-                        style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(
                               color: _mutedInk,
                               fontWeight: FontWeight.w700,
                             ),
@@ -759,9 +750,9 @@ class _ShowTile extends ConsumerWidget {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          color: _ink,
-                          fontWeight: FontWeight.w900,
-                        ),
+                      color: _ink,
+                      fontWeight: FontWeight.w900,
+                    ),
                   ),
                   if (show.description.isNotEmpty) ...[
                     const SizedBox(height: 4),
@@ -769,10 +760,9 @@ class _ShowTile extends ConsumerWidget {
                       show.description,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context)
-                          .textTheme
-                          .bodyMedium
-                          ?.copyWith(color: _mutedInk),
+                      style: Theme.of(
+                        context,
+                      ).textTheme.bodyMedium?.copyWith(color: _mutedInk),
                     ),
                   ],
                 ],
@@ -914,10 +904,11 @@ class _CompactDockRow extends StatelessWidget {
         _Artwork(url: item.imageUrl, size: 46),
         const SizedBox(width: 12),
         Expanded(child: _NowPlayingText(item: item)),
-        _RoundPlayButton(
-          playing: state.playing,
-          onPressed: state.playing ? handler.pause : handler.play,
-          size: 46,
+        _TransportCluster(
+          handler: handler,
+          item: item,
+          state: state,
+          compact: true,
         ),
       ],
     );
@@ -940,19 +931,19 @@ class _NowPlayingText extends StatelessWidget {
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                color: _ink,
-                fontWeight: FontWeight.w900,
-              ),
+            color: _ink,
+            fontWeight: FontWeight.w900,
+          ),
         ),
         const SizedBox(height: 2),
         Text(
-          item.isLive ? 'Live on ${item.stationName}' : item.stationName,
+          _playbackMeta(item),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: _mutedInk,
-                fontWeight: FontWeight.w600,
-              ),
+            color: _mutedInk,
+            fontWeight: FontWeight.w600,
+          ),
         ),
       ],
     );
@@ -964,46 +955,77 @@ class _TransportCluster extends StatelessWidget {
     required this.handler,
     required this.item,
     required this.state,
+    this.compact = false,
   });
 
   final PlaybackController handler;
   final PlaybackItem item;
   final PlaybackState state;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
+    final duration = handler.duration ?? item.duration;
+    void seekBy(Duration delta) {
+      handler.seek(
+        clampSeekPosition(
+          current: handler.position,
+          delta: delta,
+          duration: duration,
+        ),
+      );
+    }
+
+    final playButton = Padding(
+      padding: EdgeInsets.symmetric(horizontal: compact ? 4 : 8),
+      child: _RoundPlayButton(
+        playing: state.playing,
+        onPressed: state.playing ? handler.pause : handler.play,
+        size: compact ? 46 : 56,
+      ),
+    );
+
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (item.isCatchUp)
+        if (item.isCatchUp) ...[
           _SkipTransportButton(
-            tooltip: 'Back 15 seconds',
-            icon: Icons.fast_rewind_rounded,
-            onPressed: handler.rewind,
+            seconds: 30,
+            backward: true,
+            compact: compact,
+            onPressed: () => seekBy(const Duration(seconds: -30)),
           ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: _RoundPlayButton(
-            playing: state.playing,
-            onPressed: state.playing ? handler.pause : handler.play,
-          ),
-        ),
-        if (item.isCatchUp)
+          SizedBox(width: compact ? 4 : 8),
           _SkipTransportButton(
-            tooltip: 'Forward 15 seconds',
-            icon: Icons.fast_forward_rounded,
-            onPressed: handler.fastForward,
+            seconds: 15,
+            backward: true,
+            compact: compact,
+            onPressed: () => seekBy(const Duration(seconds: -15)),
           ),
+        ],
+        playButton,
+        if (item.isCatchUp) ...[
+          _SkipTransportButton(
+            seconds: 15,
+            backward: false,
+            compact: compact,
+            onPressed: () => seekBy(const Duration(seconds: 15)),
+          ),
+          SizedBox(width: compact ? 4 : 8),
+          _SkipTransportButton(
+            seconds: 30,
+            backward: false,
+            compact: compact,
+            onPressed: () => seekBy(const Duration(seconds: 30)),
+          ),
+        ],
       ],
     );
   }
 }
 
 class _DockSeekBar extends StatelessWidget {
-  const _DockSeekBar({
-    required this.handler,
-    required this.item,
-  });
+  const _DockSeekBar({required this.handler, required this.item});
 
   final PlaybackController handler;
   final PlaybackItem item;
@@ -1021,9 +1043,9 @@ class _DockSeekBar extends StatelessWidget {
             Text(
               formatDuration(position),
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: _mutedInk,
-                    fontWeight: FontWeight.w800,
-                  ),
+                color: _mutedInk,
+                fontWeight: FontWeight.w800,
+              ),
             ),
             Expanded(
               child: _SeekSlider(
@@ -1036,9 +1058,9 @@ class _DockSeekBar extends StatelessWidget {
             Text(
               formatDuration(duration),
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: _mutedInk,
-                    fontWeight: FontWeight.w800,
-                  ),
+                color: _mutedInk,
+                fontWeight: FontWeight.w800,
+              ),
             ),
           ],
         );
@@ -1093,18 +1115,16 @@ class _ExpandedPlayer extends StatelessWidget {
                       maxLines: 3,
                       overflow: TextOverflow.ellipsis,
                       textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                            color: _ink,
-                            fontWeight: FontWeight.w900,
-                          ),
+                      style: Theme.of(context).textTheme.headlineSmall
+                          ?.copyWith(color: _ink, fontWeight: FontWeight.w900),
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      item.subtitle,
+                      _playbackMeta(item),
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: _mutedInk,
-                            fontWeight: FontWeight.w700,
-                          ),
+                        color: _mutedInk,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     const SizedBox(height: 22),
                     if (item.isCatchUp)
@@ -1112,7 +1132,11 @@ class _ExpandedPlayer extends StatelessWidget {
                     else
                       const _StatusBadge(label: 'LIVE STREAM', color: _yellow),
                     const SizedBox(height: 22),
-                    _TransportCluster(handler: handler, item: item, state: state),
+                    _TransportCluster(
+                      handler: handler,
+                      item: item,
+                      state: state,
+                    ),
                   ],
                 ),
               ),
@@ -1125,10 +1149,7 @@ class _ExpandedPlayer extends StatelessWidget {
 }
 
 class _ExpandedTimeline extends StatelessWidget {
-  const _ExpandedTimeline({
-    required this.handler,
-    required this.item,
-  });
+  const _ExpandedTimeline({required this.handler, required this.item});
 
   final PlaybackController handler;
   final PlaybackItem item;
@@ -1141,8 +1162,9 @@ class _ExpandedTimeline extends StatelessWidget {
       builder: (context, snapshot) {
         final position = snapshot.data ?? Duration.zero;
         final duration = handler.duration ?? item.duration ?? Duration.zero;
-        final remaining =
-            position >= duration ? Duration.zero : duration - position;
+        final remaining = position >= duration
+            ? Duration.zero
+            : duration - position;
         return Column(
           children: [
             _SeekSlider(
@@ -1156,25 +1178,22 @@ class _ExpandedTimeline extends StatelessWidget {
                 Text(
                   formatDuration(position),
                   style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        fontWeight: FontWeight.w900,
-                        color: _ink,
-                      ),
+                    fontWeight: FontWeight.w900,
+                    color: _ink,
+                  ),
                 ),
                 const Spacer(),
                 Text(
                   '-${formatDuration(remaining)}',
                   style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        color: _mutedInk,
-                      ),
+                    fontWeight: FontWeight.w800,
+                    color: _mutedInk,
+                  ),
                 ),
               ],
             ),
             const SizedBox(height: 16),
-            _TimeJumpField(
-              duration: duration,
-              onJump: handler.seek,
-            ),
+            _TimeJumpField(duration: duration, onJump: handler.seek),
           ],
         );
       },
@@ -1220,10 +1239,7 @@ class _SeekSlider extends StatelessWidget {
 }
 
 class _TimeJumpField extends StatefulWidget {
-  const _TimeJumpField({
-    required this.duration,
-    required this.onJump,
-  });
+  const _TimeJumpField({required this.duration, required this.onJump});
 
   final Duration duration;
   final ValueChanged<Duration> onJump;
@@ -1247,9 +1263,7 @@ class _TimeJumpFieldState extends State<_TimeJumpField> {
     return TextField(
       controller: _controller,
       keyboardType: TextInputType.datetime,
-      inputFormatters: [
-        FilteringTextInputFormatter.allow(RegExp(r'[0-9:]')),
-      ],
+      inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9:]'))],
       onSubmitted: (_) => _jump(),
       decoration: InputDecoration(
         labelText: 'Jump to time',
@@ -1308,19 +1322,23 @@ class _RoundPlayButton extends StatelessWidget {
 
 class _SkipTransportButton extends StatelessWidget {
   const _SkipTransportButton({
-    required this.tooltip,
-    required this.icon,
+    required this.seconds,
+    required this.backward,
     required this.onPressed,
+    this.compact = false,
   });
 
-  final String tooltip;
-  final IconData icon;
+  final int seconds;
+  final bool backward;
   final VoidCallback onPressed;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
+    final label = '${seconds}s';
+    final direction = backward ? 'Back' : 'Forward';
     return Tooltip(
-      message: tooltip,
+      message: '$direction $seconds seconds',
       child: Material(
         color: _paper,
         borderRadius: BorderRadius.circular(8),
@@ -1328,19 +1346,23 @@ class _SkipTransportButton extends StatelessWidget {
           onTap: onPressed,
           borderRadius: BorderRadius.circular(8),
           child: SizedBox(
-            width: 56,
-            height: 56,
+            width: compact ? 42 : 56,
+            height: compact ? 46 : 56,
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(icon, size: 22, color: _ink),
+                Icon(
+                  backward ? Icons.replay_rounded : Icons.forward_rounded,
+                  size: compact ? 18 : 22,
+                  color: _ink,
+                ),
                 Text(
-                  '15s',
+                  label,
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: _ink,
-                        fontWeight: FontWeight.w900,
-                        height: 1,
-                      ),
+                    color: _ink,
+                    fontWeight: FontWeight.w900,
+                    height: 1,
+                  ),
                 ),
               ],
             ),
@@ -1352,10 +1374,7 @@ class _SkipTransportButton extends StatelessWidget {
 }
 
 class _PlayGlyphButton extends StatelessWidget {
-  const _PlayGlyphButton({
-    required this.enabled,
-    required this.onPressed,
-  });
+  const _PlayGlyphButton({required this.enabled, required this.onPressed});
 
   final bool enabled;
   final VoidCallback onPressed;
@@ -1378,10 +1397,7 @@ class _PlayGlyphButton extends StatelessWidget {
 }
 
 class _Artwork extends StatelessWidget {
-  const _Artwork({
-    required this.url,
-    required this.size,
-  });
+  const _Artwork({required this.url, required this.size});
 
   final String? url;
   final double size;
@@ -1437,9 +1453,9 @@ class _StatusBadge extends StatelessWidget {
       child: Text(
         label,
         style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: foreground,
-              fontWeight: FontWeight.w900,
-            ),
+          color: foreground,
+          fontWeight: FontWeight.w900,
+        ),
       ),
     );
   }
@@ -1466,9 +1482,9 @@ class _TinyLabel extends StatelessWidget {
         Text(
           label,
           style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: color,
-                fontWeight: FontWeight.w900,
-              ),
+            color: color,
+            fontWeight: FontWeight.w900,
+          ),
         ),
       ],
     );
@@ -1476,11 +1492,7 @@ class _TinyLabel extends StatelessWidget {
 }
 
 class _StatusPanel extends StatelessWidget {
-  const _StatusPanel({
-    required this.height,
-    this.title,
-    this.onRetry,
-  });
+  const _StatusPanel({required this.height, this.title, this.onRetry});
 
   final double height;
   final String? title;
@@ -1532,9 +1544,9 @@ class _EmptyState extends StatelessWidget {
         child: Text(
           title,
           style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                color: _mutedInk,
-                fontWeight: FontWeight.w700,
-              ),
+            color: _mutedInk,
+            fontWeight: FontWeight.w700,
+          ),
         ),
       ),
     );
@@ -1551,9 +1563,7 @@ void _showPlayerSheet(BuildContext context, PlaybackController handler) {
       borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
     ),
     builder: (context) => Center(
-      child: SingleChildScrollView(
-        child: _ExpandedPlayer(handler: handler),
-      ),
+      child: SingleChildScrollView(child: _ExpandedPlayer(handler: handler)),
     ),
   );
 }
@@ -1561,6 +1571,19 @@ void _showPlayerSheet(BuildContext context, PlaybackController handler) {
 String _formatRange(DateTime start, DateTime end) {
   final format = DateFormat('h:mm a');
   return '${format.format(start)} - ${format.format(end)}';
+}
+
+String _playbackMeta(PlaybackItem item) {
+  if (item.isLive) {
+    return 'Live on ${item.stationName}';
+  }
+
+  final showDate = item.showDate;
+  if (showDate == null) {
+    return item.stationName;
+  }
+
+  return '${item.stationName} - ${DateFormat('EEE d MMM yyyy').format(showDate)}';
 }
 
 String _dayLabel(ScheduleDay day) {

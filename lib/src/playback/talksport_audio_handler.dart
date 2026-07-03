@@ -190,7 +190,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
     }
     await seek(
       clampSeekPosition(
-        current: _player.position,
+        current: position,
         delta: const Duration(seconds: 15),
         duration: duration,
       ),
@@ -205,7 +205,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
     }
     await seek(
       clampSeekPosition(
-        current: _player.position,
+        current: position,
         delta: const Duration(seconds: -15),
         duration: duration,
       ),

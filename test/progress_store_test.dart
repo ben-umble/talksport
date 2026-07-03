@@ -16,6 +16,7 @@ void main() {
       audioUrl: 'https://example.test/audio.mp3',
       imageUrl: 'https://example.test/art.png',
       duration: const Duration(hours: 3),
+      showDate: DateTime.utc(2026, 6, 29),
     );
 
     await store.saveProgress(item, const Duration(minutes: 42, seconds: 15));
@@ -28,6 +29,24 @@ void main() {
     expect(lastItem?.id, item.id);
     expect(lastItem?.title, 'White & Jordan');
     expect(lastItem?.isCatchUp, isTrue);
+    expect(lastItem?.showDate, DateTime.utc(2026, 6, 29));
+  });
+
+  test('infers show date from older saved catch-up ids', () {
+    final item = PlaybackItem.fromJson({
+      'id': '20260702-25052',
+      'kind': 'catchUp',
+      'stationSlug': 'talksport',
+      'stationName': 'talkSPORT',
+      'title': 'White & Jordan',
+      'subtitle': 'talkSPORT',
+      'description': '',
+      'audioUrl': 'https://example.test/audio.mp3',
+      'imageUrl': null,
+      'durationMs': 10800000,
+    });
+
+    expect(item.showDate, DateTime.utc(2026, 7, 2));
   });
 
   test('does not store progress for live streams', () async {

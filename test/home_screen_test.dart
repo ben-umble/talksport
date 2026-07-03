@@ -38,6 +38,46 @@ void main() {
     expect(find.text('Search shows'), findsOneWidget);
     expect(find.byIcon(Icons.play_arrow_rounded), findsWidgets);
   });
+
+  testWidgets('shows catch-up date and 15/30 second dock controls', (
+    tester,
+  ) async {
+    final handler = _FakePlaybackController();
+    addTearDown(handler.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          talkSportApiProvider.overrideWithValue(_FakeTalkSportApi()),
+          progressStoreProvider.overrideWithValue(ProgressStore.memory()),
+          playbackControllerProvider.overrideWithValue(handler),
+        ],
+        child: const MaterialApp(home: HomeScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await handler.playItem(
+      PlaybackItem(
+        id: '20260629-white-and-jordan',
+        kind: PlaybackKind.catchUp,
+        stationSlug: 'talksport',
+        stationName: 'talkSPORT',
+        title: 'White & Jordan',
+        subtitle: 'talkSPORT',
+        description: '',
+        audioUrl: 'https://example.test/audio.mp3',
+        imageUrl: null,
+        duration: const Duration(hours: 3),
+        showDate: DateTime.utc(2026, 6, 29),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('talkSPORT - Mon 29 Jun 2026'), findsOneWidget);
+    expect(find.text('15s'), findsNWidgets(2));
+    expect(find.text('30s'), findsNWidgets(2));
+  });
 }
 
 class _FakePlaybackController implements PlaybackController {
