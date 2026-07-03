@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:talksport_companion/src/data/talksport_api.dart';
@@ -10,8 +11,48 @@ import 'package:talksport_companion/src/models/schedule_day.dart';
 import 'package:talksport_companion/src/models/show.dart';
 
 void main() {
+  test('uses the direct schedule API before the WebView fallback', () async {
+    SharedPreferences.setMockInitialValues({});
+    final scraper = _FailingScraper();
+    final api = TalkSportApi(
+      client: MockClient((request) async {
+        expect(request.url.path, '/play/api/schedule/talksport');
+        return http.Response(
+          jsonEncode([_scheduleDay('API show').toJson()]),
+          200,
+        );
+      }),
+      pageScraper: scraper,
+    );
+
+    final schedule = await api.fetchSchedule('talksport');
+
+    expect(schedule.single.shows.single.title, 'API show');
+    expect(scraper.calls, 0);
+  });
+
+  test('uses the direct now-playing API before the WebView fallback', () async {
+    SharedPreferences.setMockInitialValues({});
+    final scraper = _FailingScraper();
+    final api = TalkSportApi(
+      client: MockClient((request) async {
+        expect(request.url.path, '/play/api/onAirNow/talksport');
+        return http.Response(
+          jsonEncode(_nowPlaying('API live show').toJson()),
+          200,
+        );
+      }),
+      pageScraper: scraper,
+    );
+
+    final nowPlaying = await api.fetchNowPlaying('talksport');
+
+    expect(nowPlaying.title, 'API live show');
+    expect(scraper.calls, 0);
+  });
+
   test(
-    'returns stale cached schedule while refreshing in the background',
+    'returns stale cached schedule without blocking on WebView refresh',
     () async {
       SharedPreferences.setMockInitialValues({
         'talksport.metadata.talksport': jsonEncode(
@@ -31,12 +72,12 @@ void main() {
       final schedule = await api.fetchSchedule('talksport');
 
       expect(schedule.single.shows.single.title, 'Cached White & Jordan');
-      expect(scraper.calls, 1);
+      expect(scraper.calls, 0);
     },
   );
 
   test(
-    'returns stale cached now-playing while refreshing in the background',
+    'returns stale cached now-playing without blocking on WebView refresh',
     () async {
       SharedPreferences.setMockInitialValues({
         'talksport.metadata.talksport': jsonEncode(
@@ -56,7 +97,7 @@ void main() {
       final nowPlaying = await api.fetchNowPlaying('talksport');
 
       expect(nowPlaying.title, 'Cached live show');
-      expect(scraper.calls, 1);
+      expect(scraper.calls, 0);
     },
   );
 }

@@ -39,6 +39,7 @@ class TalkSportApi {
 
   static const _cachedMetadataMaxAge = Duration(days: 7);
   static const _backgroundRefreshAfter = Duration(minutes: 2);
+  static const _requestTimeout = Duration(seconds: 8);
 
   Future<List<ScheduleDay>> fetchSchedule(
     String stationSlug, {
@@ -53,6 +54,13 @@ class TalkSportApi {
       }
     }
 
+    final days = await _fetchScheduleFromApi(stationSlug);
+    if (days != null) {
+      _scheduleCache[stationSlug] = _ScheduleCacheEntry(days);
+      _refreshApiMetadataInBackground(stationSlug);
+      return days;
+    }
+
     final pagePayload = await _fetchPagePayload(stationSlug);
     if (pagePayload != null) {
       _scheduleCache[stationSlug] = _ScheduleCacheEntry(pagePayload.schedule);
@@ -60,27 +68,10 @@ class TalkSportApi {
       return pagePayload.schedule;
     }
 
-    try {
-      final decoded =
-          await _getJson(
-                Uri.parse('$_baseUrl/schedule/$stationSlug'),
-                'Schedule',
-              )
-              as List<dynamic>;
-      final days =
-          decoded
-              .whereType<Map<String, dynamic>>()
-              .map(ScheduleDay.fromJson)
-              .toList()
-            ..sort((a, b) => a.dayNumber.compareTo(b.dayNumber));
-      _scheduleCache[stationSlug] = _ScheduleCacheEntry(days);
-      return days;
-    } catch (error, stackTrace) {
-      if (cache != null) {
-        return cache.days;
-      }
-      Error.throwWithStackTrace(error, stackTrace);
+    if (cache != null) {
+      return cache.days;
     }
+    throw const TalkSportApiException('Schedule is unavailable.');
   }
 
   Future<NowPlaying> fetchNowPlaying(String stationSlug) async {
@@ -90,12 +81,52 @@ class TalkSportApi {
       return cached.payload.nowPlaying;
     }
 
+    final nowPlaying = await _fetchNowPlayingFromApi(stationSlug);
+    if (nowPlaying != null) {
+      _refreshApiMetadataInBackground(stationSlug);
+      return nowPlaying;
+    }
+
     final pagePayload = await _fetchPagePayload(stationSlug);
     if (pagePayload != null) {
       unawaited(_metadataCache.write(stationSlug, pagePayload));
       return pagePayload.nowPlaying;
     }
 
+    throw const TalkSportApiException('Now playing is unavailable.');
+  }
+
+  Future<TalkSportPagePayload?> _fetchApiPayload(String stationSlug) async {
+    try {
+      final results = await Future.wait<Object?>([
+        _getJson(Uri.parse('$_baseUrl/schedule/$stationSlug'), 'Schedule'),
+        _getJson(Uri.parse('$_baseUrl/onAirNow/$stationSlug'), 'Now playing'),
+      ]);
+      final schedule = _scheduleFromDecoded(results[0] as List<dynamic>);
+      final nowPlaying = NowPlaying.fromJson(
+        results[1] as Map<String, dynamic>,
+      );
+      return TalkSportPagePayload(nowPlaying: nowPlaying, schedule: schedule);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<List<ScheduleDay>?> _fetchScheduleFromApi(String stationSlug) async {
+    try {
+      final decoded =
+          await _getJson(
+                Uri.parse('$_baseUrl/schedule/$stationSlug'),
+                'Schedule',
+              )
+              as List<dynamic>;
+      return _scheduleFromDecoded(decoded);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<NowPlaying?> _fetchNowPlayingFromApi(String stationSlug) async {
     try {
       final decoded =
           await _getJson(
@@ -104,15 +135,15 @@ class TalkSportApi {
               )
               as Map<String, dynamic>;
       return NowPlaying.fromJson(decoded);
-    } catch (error, stackTrace) {
-      Error.throwWithStackTrace(error, stackTrace);
+    } catch (_) {
+      return null;
     }
   }
 
   Future<Object?> _getJson(Uri uri, String label) async {
     final response = await _client
         .get(uri, headers: _headers)
-        .timeout(const Duration(seconds: 12));
+        .timeout(_requestTimeout);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw TalkSportApiException(
         '$label request failed with ${response.statusCode}.',
@@ -129,7 +160,7 @@ class TalkSportApi {
     try {
       final payload = await _pagePayloadWithTimeout(
         pageScraper.fetch(stationSlug),
-        const Duration(seconds: 45),
+        const Duration(seconds: 15),
       );
       if (payload != null) {
         return payload;
@@ -163,7 +194,15 @@ class TalkSportApi {
       return;
     }
 
-    _backgroundRefreshes[stationSlug] = _fetchPagePayload(stationSlug)
+    _refreshApiMetadataInBackground(stationSlug);
+  }
+
+  void _refreshApiMetadataInBackground(String stationSlug) {
+    if (_backgroundRefreshes.containsKey(stationSlug)) {
+      return;
+    }
+
+    _backgroundRefreshes[stationSlug] = _fetchApiPayload(stationSlug)
         .then((payload) async {
           if (payload != null) {
             await _metadataCache.write(stationSlug, payload);
@@ -196,6 +235,14 @@ class TalkSportApi {
       );
     }
     return jsonDecode(response.body);
+  }
+
+  List<ScheduleDay> _scheduleFromDecoded(List<dynamic> decoded) {
+    return decoded
+        .whereType<Map<String, dynamic>>()
+        .map(ScheduleDay.fromJson)
+        .toList()
+      ..sort((a, b) => a.dayNumber.compareTo(b.dayNumber));
   }
 }
 

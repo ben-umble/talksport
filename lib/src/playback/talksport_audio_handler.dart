@@ -54,6 +54,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
   late final StreamSubscription<Duration?> _durationSubscription;
   late final StreamSubscription<Duration> _positionSubscription;
   DateTime _lastProgressSave = DateTime.fromMillisecondsSinceEpoch(0);
+  Duration _restoredPosition = Duration.zero;
   bool _loadingItem = false;
 
   @override
@@ -68,7 +69,13 @@ class TalkSportAudioHandler extends BaseAudioHandler
   bool get isPlaying => _player.playing;
 
   @override
-  Duration get position => _player.position;
+  Duration get position {
+    if (_player.processingState == ProcessingState.idle ||
+        playbackState.value.processingState == AudioProcessingState.error) {
+      return _restoredPosition;
+    }
+    return _player.position;
+  }
 
   @override
   Duration? get duration => _player.duration ?? currentItem.value?.duration;
@@ -83,7 +90,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
     if (last == null || !last.isCatchUp) {
       return;
     }
-    await _loadItem(last, playWhenReady: false);
+    await _restoreItemShell(last);
   }
 
   Future<void> _loadItem(
@@ -107,6 +114,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
           (knownDuration == null || resume < knownDuration)) {
         await _player.seek(resume);
       }
+      _restoredPosition = resume;
       await _progressStore.saveLastItem(item);
     } finally {
       _loadingItem = false;
@@ -156,6 +164,18 @@ class TalkSportAudioHandler extends BaseAudioHandler
   Future<void> seek(Duration position) async {
     final item = currentItem.value;
     if (item?.isLive ?? true) {
+      return;
+    }
+    if (_player.processingState == ProcessingState.idle ||
+        playbackState.value.processingState == AudioProcessingState.error) {
+      _restoredPosition = position;
+      await _progressStore.saveProgress(item!, position);
+      _broadcastIdlePlaybackState(item, position);
+      await _mediaControls?.updateTimeline(
+        position: position,
+        duration: duration,
+        seekable: true,
+      );
       return;
     }
     await _player.seek(position);
@@ -285,7 +305,48 @@ class TalkSportAudioHandler extends BaseAudioHandler
       return;
     }
     _lastProgressSave = now;
-    await _progressStore.saveProgress(item, _player.position);
+    await _progressStore.saveProgress(item, position);
+  }
+
+  Future<void> _restoreItemShell(PlaybackItem item) async {
+    currentItem.value = item;
+    final media = item.toMediaItem();
+    mediaItem.add(media);
+    final saved = _progressStore.progressFor(item.id);
+    final resume = saved?.position ?? Duration.zero;
+    _restoredPosition = resume;
+    _broadcastIdlePlaybackState(item, resume);
+    await _mediaControls?.updateItem(item);
+    await _mediaControls?.updatePlaybackStatus(playing: false);
+    await _mediaControls?.updateTimeline(
+      position: resume,
+      duration: duration,
+      seekable: item.isCatchUp,
+    );
+  }
+
+  void _broadcastIdlePlaybackState(PlaybackItem item, Duration position) {
+    final isCatchUp = item.isCatchUp;
+    playbackState.add(
+      playbackState.value.copyWith(
+        controls: [
+          if (isCatchUp) MediaControl.rewind,
+          MediaControl.play,
+          if (isCatchUp) MediaControl.fastForward,
+          MediaControl.stop,
+        ],
+        systemActions: {
+          if (isCatchUp) MediaAction.seek,
+          if (isCatchUp) MediaAction.seekBackward,
+          if (isCatchUp) MediaAction.seekForward,
+        },
+        androidCompactActionIndices: isCatchUp ? const [0, 1, 2] : const [0, 1],
+        processingState: AudioProcessingState.idle,
+        playing: false,
+        updatePosition: position,
+        bufferedPosition: Duration.zero,
+      ),
+    );
   }
 
   AudioProcessingState _mapProcessingState(ProcessingState state) {
