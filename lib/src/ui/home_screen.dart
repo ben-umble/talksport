@@ -491,14 +491,23 @@ class _CatchUpBrowser extends ConsumerWidget {
   }
 }
 
-class _CatchUpContent extends ConsumerWidget {
+class _CatchUpContent extends ConsumerStatefulWidget {
   const _CatchUpContent({required this.station, required this.days});
 
   final Station station;
   final List<ScheduleDay> days;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_CatchUpContent> createState() => _CatchUpContentState();
+}
+
+class _CatchUpContentState extends ConsumerState<_CatchUpContent> {
+  bool _refreshing = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final station = widget.station;
+    final days = widget.days;
     final selectedDayNumber = ref.watch(selectedDayNumberProvider);
     final query = ref.watch(searchQueryProvider);
     final selectedDay = days.firstWhere(
@@ -548,12 +557,18 @@ class _CatchUpContent extends ConsumerWidget {
                       ),
                     ),
                     IconButton.filledTonal(
-                      tooltip: 'Refresh',
-                      onPressed: () {
-                        ref.invalidate(scheduleProvider(station.slug));
-                        ref.invalidate(nowPlayingProvider(station.slug));
-                      },
-                      icon: const Icon(Icons.refresh_rounded),
+                      key: const Key('catch-up-refresh-button'),
+                      tooltip: _refreshing ? 'Refreshing' : 'Refresh',
+                      onPressed: _refreshing
+                          ? null
+                          : () => _refreshCatchUp(station),
+                      icon: _refreshing
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.refresh_rounded),
                     ),
                   ],
                 ),
@@ -604,6 +619,33 @@ class _CatchUpContent extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _refreshCatchUp(Station station) async {
+    setState(() => _refreshing = true);
+    try {
+      final api = ref.read(talkSportApiProvider);
+      await Future.wait([
+        api.fetchSchedule(station.slug, allowCached: false),
+        api.fetchNowPlaying(station.slug, allowCached: false),
+      ]);
+      if (!mounted) {
+        return;
+      }
+      ref.invalidate(scheduleProvider(station.slug));
+      ref.invalidate(nowPlayingProvider(station.slug));
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not refresh catch-up yet.')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _refreshing = false);
+      }
+    }
   }
 }
 

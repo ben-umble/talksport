@@ -64,7 +64,10 @@ class TalkSportApi {
       }
     }
 
-    final pagePayload = await _fetchPagePayload(stationSlug);
+    final pagePayload = await _fetchPagePayload(
+      stationSlug,
+      forceRefresh: !allowCached,
+    );
     if (pagePayload != null) {
       _scheduleCache[stationSlug] = _ScheduleCacheEntry(pagePayload.schedule);
       unawaited(_metadataCache.write(stationSlug, pagePayload));
@@ -85,14 +88,22 @@ class TalkSportApi {
     throw const TalkSportApiException('Schedule is unavailable.');
   }
 
-  Future<NowPlaying> fetchNowPlaying(String stationSlug) async {
-    final cached = await _cachedPagePayload(stationSlug);
-    if (cached != null && cached.age < _backgroundRefreshAfter) {
-      _refreshMetadataInBackground(stationSlug, cached);
-      return cached.payload.nowPlaying;
+  Future<NowPlaying> fetchNowPlaying(
+    String stationSlug, {
+    bool allowCached = true,
+  }) async {
+    if (allowCached) {
+      final cached = await _cachedPagePayload(stationSlug);
+      if (cached != null && cached.age < _backgroundRefreshAfter) {
+        _refreshMetadataInBackground(stationSlug, cached);
+        return cached.payload.nowPlaying;
+      }
     }
 
-    final pagePayload = await _fetchPagePayload(stationSlug);
+    final pagePayload = await _fetchPagePayload(
+      stationSlug,
+      forceRefresh: !allowCached,
+    );
     if (pagePayload != null) {
       unawaited(_metadataCache.write(stationSlug, pagePayload));
       return pagePayload.nowPlaying;
@@ -175,14 +186,17 @@ class TalkSportApi {
     return _decodeJson(response);
   }
 
-  Future<TalkSportPagePayload?> _fetchPagePayload(String stationSlug) async {
+  Future<TalkSportPagePayload?> _fetchPagePayload(
+    String stationSlug, {
+    bool forceRefresh = false,
+  }) async {
     final pageScraper = _pageScraper;
     if (pageScraper == null) {
       return null;
     }
     try {
       final payload = await _pagePayloadWithTimeout(
-        pageScraper.fetch(stationSlug),
+        pageScraper.fetch(stationSlug, forceRefresh: forceRefresh),
         const Duration(seconds: 15),
       );
       if (payload != null) {
@@ -190,7 +204,7 @@ class TalkSportApi {
       }
 
       return _pagePayloadWithTimeout(
-        pageScraper.fetch(stationSlug),
+        pageScraper.fetch(stationSlug, forceRefresh: forceRefresh),
         const Duration(seconds: 3),
       );
     } catch (_) {
@@ -239,7 +253,7 @@ class TalkSportApi {
   Future<TalkSportPagePayload?> _fetchBestMetadataPayload(
     String stationSlug,
   ) async {
-    return await _fetchPagePayload(stationSlug) ??
+    return await _fetchPagePayload(stationSlug, forceRefresh: true) ??
         await _fetchApiPayload(stationSlug);
   }
 

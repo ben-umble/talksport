@@ -259,7 +259,10 @@ class _FailingScraper implements TalkSportPageScraper {
   int calls = 0;
 
   @override
-  Future<TalkSportPagePayload> fetch(String stationSlug) async {
+  Future<TalkSportPagePayload> fetch(
+    String stationSlug, {
+    bool forceRefresh = false,
+  }) async {
     calls++;
     throw StateError('Refresh failed');
   }
@@ -276,7 +279,10 @@ class _SuccessfulScraper implements TalkSportPageScraper {
   int calls = 0;
 
   @override
-  Future<TalkSportPagePayload> fetch(String stationSlug) async {
+  Future<TalkSportPagePayload> fetch(
+    String stationSlug, {
+    bool forceRefresh = false,
+  }) async {
     calls++;
     return TalkSportPagePayload(
       nowPlaying: _nowPlaying(nowPlayingTitle),

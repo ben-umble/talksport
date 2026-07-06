@@ -80,6 +80,33 @@ void main() {
     expect(find.text('1m'), findsOneWidget);
     expect(find.text('4m'), findsOneWidget);
   });
+
+  testWidgets('refresh button requests fresh catch-up metadata', (
+    tester,
+  ) async {
+    final api = _FakeTalkSportApi();
+    final handler = _FakePlaybackController();
+    addTearDown(handler.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          talkSportApiProvider.overrideWithValue(api),
+          progressStoreProvider.overrideWithValue(ProgressStore.memory()),
+          playbackControllerProvider.overrideWithValue(handler),
+        ],
+        child: const MaterialApp(home: HomeScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(api.forcedScheduleRefreshes, 0);
+    await tester.tap(find.byKey(const Key('catch-up-refresh-button')));
+    await tester.pumpAndSettle();
+
+    expect(api.forcedScheduleRefreshes, 1);
+    expect(api.forcedNowPlayingRefreshes, 1);
+  });
 }
 
 class _FakePlaybackController implements PlaybackController {
@@ -155,11 +182,17 @@ class _FakePlaybackController implements PlaybackController {
 }
 
 class _FakeTalkSportApi extends TalkSportApi {
+  int forcedScheduleRefreshes = 0;
+  int forcedNowPlayingRefreshes = 0;
+
   @override
   Future<List<ScheduleDay>> fetchSchedule(
     String stationSlug, {
     bool allowCached = true,
   }) async {
+    if (!allowCached) {
+      forcedScheduleRefreshes++;
+    }
     return [
       ScheduleDay(
         date: '2026-06-29',
@@ -181,7 +214,13 @@ class _FakeTalkSportApi extends TalkSportApi {
   }
 
   @override
-  Future<NowPlaying> fetchNowPlaying(String stationSlug) async {
+  Future<NowPlaying> fetchNowPlaying(
+    String stationSlug, {
+    bool allowCached = true,
+  }) async {
+    if (!allowCached) {
+      forcedNowPlayingRefreshes++;
+    }
     return NowPlaying(
       title: 'World Cup GameDay Live',
       id: 'live',

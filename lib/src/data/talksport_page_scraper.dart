@@ -9,7 +9,10 @@ import '../models/now_playing.dart';
 import '../models/schedule_day.dart';
 
 abstract class TalkSportPageScraper {
-  Future<TalkSportPagePayload> fetch(String stationSlug);
+  Future<TalkSportPagePayload> fetch(
+    String stationSlug, {
+    bool forceRefresh = false,
+  });
 
   static TalkSportPageScraper? maybeCreate() {
     if (Platform.isWindows) {
@@ -39,9 +42,12 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
   static Future<void>? _environmentInitialization;
 
   @override
-  Future<TalkSportPagePayload> fetch(String stationSlug) {
+  Future<TalkSportPagePayload> fetch(
+    String stationSlug, {
+    bool forceRefresh = false,
+  }) {
     final cached = _cache[stationSlug];
-    if (cached != null && cached.isFresh) {
+    if (!forceRefresh && cached != null && cached.isFresh) {
       return Future.value(cached.payload);
     }
 
@@ -50,9 +56,14 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
       return existing;
     }
 
-    final request = _load(stationSlug).whenComplete(
-      () => _inFlight.remove(stationSlug),
-    );
+    if (forceRefresh) {
+      _cache.remove(stationSlug);
+    }
+
+    final request = _load(
+      stationSlug,
+      forceRefresh: forceRefresh,
+    ).whenComplete(() => _inFlight.remove(stationSlug));
     _inFlight[stationSlug] = request;
     return request;
   }
@@ -83,13 +94,21 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
     }();
   }
 
-  Future<TalkSportPagePayload> _load(String stationSlug) async {
+  Future<TalkSportPagePayload> _load(
+    String stationSlug, {
+    required bool forceRefresh,
+  }) async {
     await _ensureInitialized();
     final controller = _controller;
     if (controller == null) {
       throw const TalkSportPageScraperException('WebView is not initialized.');
     }
-    await controller.loadUrl('https://talksport.com/play/$stationSlug');
+    final cacheBuster = forceRefresh
+        ? '?refresh=${DateTime.now().millisecondsSinceEpoch}'
+        : '';
+    await controller.loadUrl(
+      'https://talksport.com/play/$stationSlug$cacheBuster',
+    );
 
     final deadline = DateTime.now().add(const Duration(seconds: 35));
     Object? lastResult;
@@ -135,11 +154,12 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
       return null;
     }
 
-    final days = schedule
-        .whereType<Map<String, dynamic>>()
-        .map(ScheduleDay.fromJson)
-        .toList()
-      ..sort((a, b) => a.dayNumber.compareTo(b.dayNumber));
+    final days =
+        schedule
+            .whereType<Map<String, dynamic>>()
+            .map(ScheduleDay.fromJson)
+            .toList()
+          ..sort((a, b) => a.dayNumber.compareTo(b.dayNumber));
 
     if (days.isEmpty) {
       return null;
@@ -174,7 +194,9 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
 
   static String _webViewUserDataPath() {
     final root = Platform.environment['LOCALAPPDATA'];
-    final base = root == null || root.isEmpty ? Directory.systemTemp.path : root;
+    final base = root == null || root.isEmpty
+        ? Directory.systemTemp.path
+        : root;
     return [
       base,
       'talkSPORT Companion',
