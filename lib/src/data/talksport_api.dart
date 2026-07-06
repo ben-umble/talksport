@@ -36,10 +36,12 @@ class TalkSportApi {
   final TalkSportMetadataCache _metadataCache;
   final Map<String, _ScheduleCacheEntry> _scheduleCache = {};
   final Map<String, Future<void>> _backgroundRefreshes = {};
+  DateTime? _directApiSuppressedUntil;
 
   static const _cachedMetadataMaxAge = Duration(days: 7);
   static const _backgroundRefreshAfter = Duration(minutes: 2);
   static const _requestTimeout = Duration(seconds: 8);
+  static const _directApiSuppressAfterVerification = Duration(minutes: 30);
 
   Future<List<ScheduleDay>> fetchSchedule(
     String stationSlug, {
@@ -49,9 +51,13 @@ class TalkSportApi {
     CachedTalkSportPagePayload? cached;
     if (allowCached) {
       cached = await _cachedPagePayload(stationSlug);
-      if (cached != null && _scheduleIsForToday(cached.payload.schedule)) {
-        _refreshMetadataInBackground(stationSlug, cached);
-        return cached.payload.schedule;
+      if (cached != null) {
+        final cachedSchedule = _scheduleForDisplay(cached.payload.schedule);
+        if (cachedSchedule != null) {
+          _scheduleCache[stationSlug] = _ScheduleCacheEntry(cachedSchedule);
+          _refreshMetadataInBackground(stationSlug, cached);
+          return cachedSchedule;
+        }
       }
     }
 
@@ -69,8 +75,9 @@ class TalkSportApi {
       return pagePayload.schedule;
     }
 
-    if (cache != null && _scheduleIsForToday(cache.days)) {
-      return cache.days;
+    final displayCache = _scheduleForDisplay(cache?.days);
+    if (displayCache != null) {
+      return displayCache;
     }
     throw const TalkSportApiException('Schedule is unavailable.');
   }
@@ -98,15 +105,26 @@ class TalkSportApi {
   }
 
   Future<TalkSportPagePayload?> _fetchApiPayload(String stationSlug) async {
+    if (!_canUseDirectApi) {
+      return null;
+    }
+
     try {
       final results = await Future.wait<Object?>([
-        _getJson(Uri.parse('$_baseUrl/schedule/$stationSlug'), 'Schedule'),
-        _getJson(Uri.parse('$_baseUrl/onAirNow/$stationSlug'), 'Now playing'),
+        _getDirectJson(
+          Uri.parse('$_baseUrl/schedule/$stationSlug'),
+          'Schedule',
+        ),
+        _getDirectJson(
+          Uri.parse('$_baseUrl/onAirNow/$stationSlug'),
+          'Now playing',
+        ),
       ]);
       final schedule = _scheduleFromDecoded(results[0] as List<dynamic>);
       final nowPlaying = NowPlaying.fromJson(
         results[1] as Map<String, dynamic>,
       );
+      _recordDirectApiSuccess();
       return TalkSportPagePayload(nowPlaying: nowPlaying, schedule: schedule);
     } catch (_) {
       return null;
@@ -114,13 +132,18 @@ class TalkSportApi {
   }
 
   Future<List<ScheduleDay>?> _fetchScheduleFromApi(String stationSlug) async {
+    if (!_canUseDirectApi) {
+      return null;
+    }
+
     try {
       final decoded =
-          await _getJson(
+          await _getDirectJson(
                 Uri.parse('$_baseUrl/schedule/$stationSlug'),
                 'Schedule',
               )
               as List<dynamic>;
+      _recordDirectApiSuccess();
       return _scheduleFromDecoded(decoded);
     } catch (_) {
       return null;
@@ -128,16 +151,32 @@ class TalkSportApi {
   }
 
   Future<NowPlaying?> _fetchNowPlayingFromApi(String stationSlug) async {
+    if (!_canUseDirectApi) {
+      return null;
+    }
+
     try {
       final decoded =
-          await _getJson(
+          await _getDirectJson(
                 Uri.parse('$_baseUrl/onAirNow/$stationSlug'),
                 'Now playing',
               )
               as Map<String, dynamic>;
+      _recordDirectApiSuccess();
       return NowPlaying.fromJson(decoded);
     } catch (_) {
       return null;
+    }
+  }
+
+  Future<Object?> _getDirectJson(Uri uri, String label) async {
+    try {
+      return await _getJson(uri, label);
+    } on TalkSportApiException catch (error) {
+      if (error.isVerificationPage) {
+        _suppressDirectApi();
+      }
+      rethrow;
     }
   }
 
@@ -240,6 +279,7 @@ class TalkSportApi {
         body.startsWith('<html')) {
       throw const TalkSportApiException(
         'talkSPORT returned a verification page instead of JSON.',
+        isVerificationPage: true,
       );
     }
     return jsonDecode(response.body);
@@ -253,20 +293,38 @@ class TalkSportApi {
       ..sort((a, b) => a.dayNumber.compareTo(b.dayNumber));
   }
 
-  bool _scheduleIsForToday(List<ScheduleDay> schedule) {
-    ScheduleDay? today;
-    for (final day in schedule) {
-      if (day.dayNumber == 0) {
-        today = day;
-        break;
-      }
-    }
-    if (today == null) {
-      return false;
+  List<ScheduleDay>? _scheduleForDisplay(List<ScheduleDay>? schedule) {
+    if (schedule == null || schedule.isEmpty) {
+      return null;
     }
 
-    final date = _scheduleDayDate(today);
-    return date != null && _dateKey(date) == _dateKey(DateTime.now());
+    final today = _localDate(DateTime.now());
+    final normalized = <ScheduleDay>[];
+    for (final day in schedule) {
+      final date = _scheduleDayDate(day);
+      if (date == null) {
+        normalized.add(day);
+        continue;
+      }
+      final localDate = _localDate(date);
+      normalized.add(
+        ScheduleDay(
+          date: day.date,
+          shows: day.shows,
+          itemId: day.itemId,
+          dayNumber: localDate.difference(today).inDays,
+        ),
+      );
+    }
+
+    final hasRelevantDay = normalized.any(
+      (day) => day.dayNumber >= -7 && day.dayNumber <= 0,
+    );
+    if (!hasRelevantDay) {
+      return null;
+    }
+
+    return normalized..sort((a, b) => a.dayNumber.compareTo(b.dayNumber));
   }
 
   DateTime? _scheduleDayDate(ScheduleDay day) {
@@ -280,19 +338,32 @@ class TalkSportApi {
     return null;
   }
 
-  String _dateKey(DateTime value) {
+  bool get _canUseDirectApi {
+    final suppressedUntil = _directApiSuppressedUntil;
+    return suppressedUntil == null || DateTime.now().isAfter(suppressedUntil);
+  }
+
+  void _suppressDirectApi() {
+    _directApiSuppressedUntil = DateTime.now().add(
+      _directApiSuppressAfterVerification,
+    );
+  }
+
+  void _recordDirectApiSuccess() {
+    _directApiSuppressedUntil = null;
+  }
+
+  DateTime _localDate(DateTime value) {
     final local = value.toLocal();
-    final year = local.year.toString().padLeft(4, '0');
-    final month = local.month.toString().padLeft(2, '0');
-    final day = local.day.toString().padLeft(2, '0');
-    return '$year-$month-$day';
+    return DateTime(local.year, local.month, local.day);
   }
 }
 
 class TalkSportApiException implements Exception {
-  const TalkSportApiException(this.message);
+  const TalkSportApiException(this.message, {this.isVerificationPage = false});
 
   final String message;
+  final bool isVerificationPage;
 
   @override
   String toString() => message;

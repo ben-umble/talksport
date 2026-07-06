@@ -48,5 +48,5 @@ final _nowPlayingTickerProvider = StreamProvider.autoDispose<void>((ref) {
 });
 
 final _scheduleTickerProvider = StreamProvider.autoDispose<void>((ref) {
-  return Stream<void>.periodic(const Duration(minutes: 2));
+  return Stream<void>.periodic(const Duration(seconds: 15));
 });

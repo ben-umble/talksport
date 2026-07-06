@@ -57,7 +57,7 @@ void main() {
       SharedPreferences.setMockInitialValues({
         'talksport.metadata.talksport': jsonEncode(
           _cachedPayloadJson(
-            age: const Duration(hours: 10),
+            age: const Duration(minutes: 1),
             nowPlayingTitle: 'Cached live show',
             scheduleTitle: 'Cached White & Jordan',
             scheduleDate: _todayKey(),
@@ -78,33 +78,66 @@ void main() {
   );
 
   test(
-    'refreshes stale-date cached schedule through the WebView fallback',
+    'normalizes stale-date cached schedule instead of calling it today',
     () async {
+      final cachedDate = DateTime.now().subtract(const Duration(days: 3));
       SharedPreferences.setMockInitialValues({
         'talksport.metadata.talksport': jsonEncode(
           _cachedPayloadJson(
-            age: const Duration(hours: 10),
+            age: const Duration(minutes: 1),
             nowPlayingTitle: 'Cached live show',
             scheduleTitle: 'Old cached show',
-            scheduleDate: '2026-06-30',
+            scheduleDate: _dateKey(cachedDate),
           ),
         ),
       });
-      final scraper = _SuccessfulScraper(
-        scheduleTitle: 'Fresh current show',
-        nowPlayingTitle: 'Fresh live show',
-      );
+      final scraper = _FailingScraper();
       final api = TalkSportApi(
-        client: MockClient((_) async => http.Response('<html></html>', 200)),
+        client: MockClient((_) async => throw StateError('HTTP was used')),
         pageScraper: scraper,
       );
 
       final schedule = await api.fetchSchedule('talksport');
 
-      expect(schedule.single.shows.single.title, 'Fresh current show');
-      expect(scraper.calls, 1);
+      expect(schedule.single.shows.single.title, 'Old cached show');
+      expect(schedule.single.dayNumber, -3);
+      expect(scraper.calls, 0);
     },
   );
+
+  test('suppresses the direct API after a verification page', () async {
+    SharedPreferences.setMockInitialValues({});
+    var httpCalls = 0;
+    final scraper = _SuccessfulScraper(
+      scheduleTitle: 'Fresh current show',
+      nowPlayingTitle: 'Fresh live show',
+    );
+    final api = TalkSportApi(
+      client: MockClient((_) async {
+        httpCalls++;
+        return http.Response(
+          '<!DOCTYPE html><html><body>Verification</body></html>',
+          200,
+          headers: {'content-type': 'text/html'},
+        );
+      }),
+      pageScraper: scraper,
+    );
+
+    final firstSchedule = await api.fetchSchedule(
+      'talksport',
+      allowCached: false,
+    );
+    final secondSchedule = await api.fetchSchedule(
+      'talksport',
+      allowCached: false,
+    );
+
+    expect(firstSchedule.single.shows.single.title, 'Fresh current show');
+    expect(secondSchedule.single.shows.single.title, 'Fresh current show');
+    expect(httpCalls, 1);
+    expect(scraper.calls, 2);
+  });
 
   test(
     'returns fresh cached now-playing without blocking on refresh',
@@ -214,11 +247,12 @@ ScheduleDay _scheduleDay(String title, {String? date}) {
   );
 }
 
-String _todayKey() {
-  final now = DateTime.now();
-  final year = now.year.toString().padLeft(4, '0');
-  final month = now.month.toString().padLeft(2, '0');
-  final day = now.day.toString().padLeft(2, '0');
+String _todayKey() => _dateKey(DateTime.now());
+
+String _dateKey(DateTime date) {
+  final year = date.year.toString().padLeft(4, '0');
+  final month = date.month.toString().padLeft(2, '0');
+  final day = date.day.toString().padLeft(2, '0');
   return '$year-$month-$day';
 }
 
