@@ -11,10 +11,44 @@ import 'package:talksport_companion/src/models/schedule_day.dart';
 import 'package:talksport_companion/src/models/show.dart';
 
 void main() {
-  test('uses the direct schedule API before the WebView fallback', () async {
+  test('uses WebView schedule metadata before the direct API', () async {
     SharedPreferences.setMockInitialValues({});
-    final scraper = _FailingScraper();
+    final scraper = _SuccessfulScraper(
+      scheduleTitle: 'WebView show',
+      nowPlayingTitle: 'WebView live show',
+    );
     final api = TalkSportApi(
+      client: MockClient((_) async => throw StateError('HTTP was used')),
+      pageScraper: scraper,
+    );
+
+    final schedule = await api.fetchSchedule('talksport');
+
+    expect(schedule.single.shows.single.title, 'WebView show');
+    expect(scraper.calls, 1);
+  });
+
+  test('uses WebView now-playing metadata before the direct API', () async {
+    SharedPreferences.setMockInitialValues({});
+    final scraper = _SuccessfulScraper(
+      scheduleTitle: 'WebView show',
+      nowPlayingTitle: 'WebView live show',
+    );
+    final api = TalkSportApi(
+      client: MockClient((_) async => throw StateError('HTTP was used')),
+      pageScraper: scraper,
+    );
+
+    final nowPlaying = await api.fetchNowPlaying('talksport');
+
+    expect(nowPlaying.title, 'WebView live show');
+    expect(scraper.calls, 1);
+  });
+
+  test('uses direct schedule API only when no scraper is available', () async {
+    SharedPreferences.setMockInitialValues({});
+    final api = TalkSportApi(
+      createDefaultPageScraper: false,
       client: MockClient((request) async {
         expect(request.url.path, '/play/api/schedule/talksport');
         return http.Response(
@@ -22,34 +56,33 @@ void main() {
           200,
         );
       }),
-      pageScraper: scraper,
     );
 
     final schedule = await api.fetchSchedule('talksport');
 
     expect(schedule.single.shows.single.title, 'API show');
-    expect(scraper.calls, 0);
   });
 
-  test('uses the direct now-playing API before the WebView fallback', () async {
-    SharedPreferences.setMockInitialValues({});
-    final scraper = _FailingScraper();
-    final api = TalkSportApi(
-      client: MockClient((request) async {
-        expect(request.url.path, '/play/api/onAirNow/talksport');
-        return http.Response(
-          jsonEncode(_nowPlaying('API live show').toJson()),
-          200,
-        );
-      }),
-      pageScraper: scraper,
-    );
+  test(
+    'uses direct now-playing API only when no scraper is available',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final api = TalkSportApi(
+        createDefaultPageScraper: false,
+        client: MockClient((request) async {
+          expect(request.url.path, '/play/api/onAirNow/talksport');
+          return http.Response(
+            jsonEncode(_nowPlaying('API live show').toJson()),
+            200,
+          );
+        }),
+      );
 
-    final nowPlaying = await api.fetchNowPlaying('talksport');
+      final nowPlaying = await api.fetchNowPlaying('talksport');
 
-    expect(nowPlaying.title, 'API live show');
-    expect(scraper.calls, 0);
-  });
+      expect(nowPlaying.title, 'API live show');
+    },
+  );
 
   test(
     'returns current-day cached schedule without blocking on refresh',
@@ -104,40 +137,6 @@ void main() {
       expect(scraper.calls, 0);
     },
   );
-
-  test('suppresses the direct API after a verification page', () async {
-    SharedPreferences.setMockInitialValues({});
-    var httpCalls = 0;
-    final scraper = _SuccessfulScraper(
-      scheduleTitle: 'Fresh current show',
-      nowPlayingTitle: 'Fresh live show',
-    );
-    final api = TalkSportApi(
-      client: MockClient((_) async {
-        httpCalls++;
-        return http.Response(
-          '<!DOCTYPE html><html><body>Verification</body></html>',
-          200,
-          headers: {'content-type': 'text/html'},
-        );
-      }),
-      pageScraper: scraper,
-    );
-
-    final firstSchedule = await api.fetchSchedule(
-      'talksport',
-      allowCached: false,
-    );
-    final secondSchedule = await api.fetchSchedule(
-      'talksport',
-      allowCached: false,
-    );
-
-    expect(firstSchedule.single.shows.single.title, 'Fresh current show');
-    expect(secondSchedule.single.shows.single.title, 'Fresh current show');
-    expect(httpCalls, 1);
-    expect(scraper.calls, 2);
-  });
 
   test(
     'returns fresh cached now-playing without blocking on refresh',

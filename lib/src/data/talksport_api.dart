@@ -13,8 +13,13 @@ class TalkSportApi {
     http.Client? client,
     TalkSportPageScraper? pageScraper,
     TalkSportMetadataCache? metadataCache,
+    bool createDefaultPageScraper = true,
   }) : _client = client ?? http.Client(),
-       _pageScraper = pageScraper ?? TalkSportPageScraper.maybeCreate(),
+       _pageScraper =
+           pageScraper ??
+           (createDefaultPageScraper
+               ? TalkSportPageScraper.maybeCreate()
+               : null),
        _metadataCache = metadataCache ?? TalkSportMetadataCache();
 
   static const _baseUrl = 'https://talksport.com/play/api';
@@ -36,12 +41,10 @@ class TalkSportApi {
   final TalkSportMetadataCache _metadataCache;
   final Map<String, _ScheduleCacheEntry> _scheduleCache = {};
   final Map<String, Future<void>> _backgroundRefreshes = {};
-  DateTime? _directApiSuppressedUntil;
 
   static const _cachedMetadataMaxAge = Duration(days: 7);
   static const _backgroundRefreshAfter = Duration(minutes: 2);
   static const _requestTimeout = Duration(seconds: 8);
-  static const _directApiSuppressAfterVerification = Duration(minutes: 30);
 
   Future<List<ScheduleDay>> fetchSchedule(
     String stationSlug, {
@@ -61,18 +64,18 @@ class TalkSportApi {
       }
     }
 
-    final days = await _fetchScheduleFromApi(stationSlug);
-    if (days != null) {
-      _scheduleCache[stationSlug] = _ScheduleCacheEntry(days);
-      _refreshApiMetadataInBackground(stationSlug);
-      return days;
-    }
-
     final pagePayload = await _fetchPagePayload(stationSlug);
     if (pagePayload != null) {
       _scheduleCache[stationSlug] = _ScheduleCacheEntry(pagePayload.schedule);
       unawaited(_metadataCache.write(stationSlug, pagePayload));
       return pagePayload.schedule;
+    }
+
+    final days = await _fetchScheduleFromApi(stationSlug);
+    if (days != null) {
+      _scheduleCache[stationSlug] = _ScheduleCacheEntry(days);
+      _refreshApiMetadataInBackground(stationSlug);
+      return days;
     }
 
     final displayCache = _scheduleForDisplay(cache?.days);
@@ -89,16 +92,16 @@ class TalkSportApi {
       return cached.payload.nowPlaying;
     }
 
-    final nowPlaying = await _fetchNowPlayingFromApi(stationSlug);
-    if (nowPlaying != null) {
-      _refreshApiMetadataInBackground(stationSlug);
-      return nowPlaying;
-    }
-
     final pagePayload = await _fetchPagePayload(stationSlug);
     if (pagePayload != null) {
       unawaited(_metadataCache.write(stationSlug, pagePayload));
       return pagePayload.nowPlaying;
+    }
+
+    final nowPlaying = await _fetchNowPlayingFromApi(stationSlug);
+    if (nowPlaying != null) {
+      _refreshApiMetadataInBackground(stationSlug);
+      return nowPlaying;
     }
 
     throw const TalkSportApiException('Now playing is unavailable.');
@@ -111,20 +114,13 @@ class TalkSportApi {
 
     try {
       final results = await Future.wait<Object?>([
-        _getDirectJson(
-          Uri.parse('$_baseUrl/schedule/$stationSlug'),
-          'Schedule',
-        ),
-        _getDirectJson(
-          Uri.parse('$_baseUrl/onAirNow/$stationSlug'),
-          'Now playing',
-        ),
+        _getJson(Uri.parse('$_baseUrl/schedule/$stationSlug'), 'Schedule'),
+        _getJson(Uri.parse('$_baseUrl/onAirNow/$stationSlug'), 'Now playing'),
       ]);
       final schedule = _scheduleFromDecoded(results[0] as List<dynamic>);
       final nowPlaying = NowPlaying.fromJson(
         results[1] as Map<String, dynamic>,
       );
-      _recordDirectApiSuccess();
       return TalkSportPagePayload(nowPlaying: nowPlaying, schedule: schedule);
     } catch (_) {
       return null;
@@ -138,12 +134,11 @@ class TalkSportApi {
 
     try {
       final decoded =
-          await _getDirectJson(
+          await _getJson(
                 Uri.parse('$_baseUrl/schedule/$stationSlug'),
                 'Schedule',
               )
               as List<dynamic>;
-      _recordDirectApiSuccess();
       return _scheduleFromDecoded(decoded);
     } catch (_) {
       return null;
@@ -157,26 +152,14 @@ class TalkSportApi {
 
     try {
       final decoded =
-          await _getDirectJson(
+          await _getJson(
                 Uri.parse('$_baseUrl/onAirNow/$stationSlug'),
                 'Now playing',
               )
               as Map<String, dynamic>;
-      _recordDirectApiSuccess();
       return NowPlaying.fromJson(decoded);
     } catch (_) {
       return null;
-    }
-  }
-
-  Future<Object?> _getDirectJson(Uri uri, String label) async {
-    try {
-      return await _getJson(uri, label);
-    } on TalkSportApiException catch (error) {
-      if (error.isVerificationPage) {
-        _suppressDirectApi();
-      }
-      rethrow;
     }
   }
 
@@ -256,8 +239,8 @@ class TalkSportApi {
   Future<TalkSportPagePayload?> _fetchBestMetadataPayload(
     String stationSlug,
   ) async {
-    return await _fetchApiPayload(stationSlug) ??
-        await _fetchPagePayload(stationSlug);
+    return await _fetchPagePayload(stationSlug) ??
+        await _fetchApiPayload(stationSlug);
   }
 
   Future<TalkSportPagePayload?> _pagePayloadWithTimeout(
@@ -279,7 +262,6 @@ class TalkSportApi {
         body.startsWith('<html')) {
       throw const TalkSportApiException(
         'talkSPORT returned a verification page instead of JSON.',
-        isVerificationPage: true,
       );
     }
     return jsonDecode(response.body);
@@ -339,18 +321,7 @@ class TalkSportApi {
   }
 
   bool get _canUseDirectApi {
-    final suppressedUntil = _directApiSuppressedUntil;
-    return suppressedUntil == null || DateTime.now().isAfter(suppressedUntil);
-  }
-
-  void _suppressDirectApi() {
-    _directApiSuppressedUntil = DateTime.now().add(
-      _directApiSuppressAfterVerification,
-    );
-  }
-
-  void _recordDirectApiSuccess() {
-    _directApiSuppressedUntil = null;
+    return _pageScraper == null;
   }
 
   DateTime _localDate(DateTime value) {
@@ -360,10 +331,9 @@ class TalkSportApi {
 }
 
 class TalkSportApiException implements Exception {
-  const TalkSportApiException(this.message, {this.isVerificationPage = false});
+  const TalkSportApiException(this.message);
 
   final String message;
-  final bool isVerificationPage;
 
   @override
   String toString() => message;
