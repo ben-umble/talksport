@@ -46,9 +46,10 @@ class TalkSportApi {
     bool allowCached = true,
   }) async {
     final cache = _scheduleCache[stationSlug];
+    CachedTalkSportPagePayload? cached;
     if (allowCached) {
-      final cached = await _cachedPagePayload(stationSlug);
-      if (cached != null) {
+      cached = await _cachedPagePayload(stationSlug);
+      if (cached != null && _scheduleIsForToday(cached.payload.schedule)) {
         _refreshMetadataInBackground(stationSlug, cached);
         return cached.payload.schedule;
       }
@@ -68,7 +69,7 @@ class TalkSportApi {
       return pagePayload.schedule;
     }
 
-    if (cache != null) {
+    if (cache != null && _scheduleIsForToday(cache.days)) {
       return cache.days;
     }
     throw const TalkSportApiException('Schedule is unavailable.');
@@ -76,7 +77,7 @@ class TalkSportApi {
 
   Future<NowPlaying> fetchNowPlaying(String stationSlug) async {
     final cached = await _cachedPagePayload(stationSlug);
-    if (cached != null) {
+    if (cached != null && cached.age < _backgroundRefreshAfter) {
       _refreshMetadataInBackground(stationSlug, cached);
       return cached.payload.nowPlaying;
     }
@@ -202,7 +203,7 @@ class TalkSportApi {
       return;
     }
 
-    _backgroundRefreshes[stationSlug] = _fetchApiPayload(stationSlug)
+    _backgroundRefreshes[stationSlug] = _fetchBestMetadataPayload(stationSlug)
         .then((payload) async {
           if (payload != null) {
             await _metadataCache.write(stationSlug, payload);
@@ -211,6 +212,13 @@ class TalkSportApi {
         })
         .catchError((_) {})
         .whenComplete(() => _backgroundRefreshes.remove(stationSlug));
+  }
+
+  Future<TalkSportPagePayload?> _fetchBestMetadataPayload(
+    String stationSlug,
+  ) async {
+    return await _fetchApiPayload(stationSlug) ??
+        await _fetchPagePayload(stationSlug);
   }
 
   Future<TalkSportPagePayload?> _pagePayloadWithTimeout(
@@ -243,6 +251,41 @@ class TalkSportApi {
         .map(ScheduleDay.fromJson)
         .toList()
       ..sort((a, b) => a.dayNumber.compareTo(b.dayNumber));
+  }
+
+  bool _scheduleIsForToday(List<ScheduleDay> schedule) {
+    ScheduleDay? today;
+    for (final day in schedule) {
+      if (day.dayNumber == 0) {
+        today = day;
+        break;
+      }
+    }
+    if (today == null) {
+      return false;
+    }
+
+    final date = _scheduleDayDate(today);
+    return date != null && _dateKey(date) == _dateKey(DateTime.now());
+  }
+
+  DateTime? _scheduleDayDate(ScheduleDay day) {
+    final parsed = DateTime.tryParse(day.date);
+    if (parsed != null) {
+      return parsed;
+    }
+    if (day.shows.isNotEmpty) {
+      return day.shows.first.startTime;
+    }
+    return null;
+  }
+
+  String _dateKey(DateTime value) {
+    final local = value.toLocal();
+    final year = local.year.toString().padLeft(4, '0');
+    final month = local.month.toString().padLeft(2, '0');
+    final day = local.day.toString().padLeft(2, '0');
+    return '$year-$month-$day';
   }
 }
 

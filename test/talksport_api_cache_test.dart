@@ -52,7 +52,7 @@ void main() {
   });
 
   test(
-    'returns stale cached schedule without blocking on WebView refresh',
+    'returns current-day cached schedule without blocking on refresh',
     () async {
       SharedPreferences.setMockInitialValues({
         'talksport.metadata.talksport': jsonEncode(
@@ -60,6 +60,7 @@ void main() {
             age: const Duration(hours: 10),
             nowPlayingTitle: 'Cached live show',
             scheduleTitle: 'Cached White & Jordan',
+            scheduleDate: _todayKey(),
           ),
         ),
       });
@@ -77,14 +78,44 @@ void main() {
   );
 
   test(
-    'returns stale cached now-playing without blocking on WebView refresh',
+    'refreshes stale-date cached schedule through the WebView fallback',
     () async {
       SharedPreferences.setMockInitialValues({
         'talksport.metadata.talksport': jsonEncode(
           _cachedPayloadJson(
             age: const Duration(hours: 10),
             nowPlayingTitle: 'Cached live show',
+            scheduleTitle: 'Old cached show',
+            scheduleDate: '2026-06-30',
+          ),
+        ),
+      });
+      final scraper = _SuccessfulScraper(
+        scheduleTitle: 'Fresh current show',
+        nowPlayingTitle: 'Fresh live show',
+      );
+      final api = TalkSportApi(
+        client: MockClient((_) async => http.Response('<html></html>', 200)),
+        pageScraper: scraper,
+      );
+
+      final schedule = await api.fetchSchedule('talksport');
+
+      expect(schedule.single.shows.single.title, 'Fresh current show');
+      expect(scraper.calls, 1);
+    },
+  );
+
+  test(
+    'returns fresh cached now-playing without blocking on refresh',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'talksport.metadata.talksport': jsonEncode(
+          _cachedPayloadJson(
+            age: const Duration(minutes: 1),
+            nowPlayingTitle: 'Cached live show',
             scheduleTitle: 'Cached White & Jordan',
+            scheduleDate: _todayKey(),
           ),
         ),
       });
@@ -100,18 +131,45 @@ void main() {
       expect(scraper.calls, 0);
     },
   );
+
+  test('does not return old cached now-playing', () async {
+    SharedPreferences.setMockInitialValues({
+      'talksport.metadata.talksport': jsonEncode(
+        _cachedPayloadJson(
+          age: const Duration(hours: 10),
+          nowPlayingTitle: 'Old cached live show',
+          scheduleTitle: 'Cached White & Jordan',
+          scheduleDate: _todayKey(),
+        ),
+      ),
+    });
+    final scraper = _SuccessfulScraper(
+      scheduleTitle: 'Fresh current show',
+      nowPlayingTitle: 'Fresh live show',
+    );
+    final api = TalkSportApi(
+      client: MockClient((_) async => http.Response('<html></html>', 200)),
+      pageScraper: scraper,
+    );
+
+    final nowPlaying = await api.fetchNowPlaying('talksport');
+
+    expect(nowPlaying.title, 'Fresh live show');
+    expect(scraper.calls, 1);
+  });
 }
 
 Map<String, dynamic> _cachedPayloadJson({
   required Duration age,
   required String nowPlayingTitle,
   required String scheduleTitle,
+  required String scheduleDate,
 }) {
   final now = DateTime.now();
   return {
     'updatedAtMs': now.subtract(age).millisecondsSinceEpoch,
     'onAirNow': _nowPlaying(nowPlayingTitle).toJson(),
-    'schedule': [_scheduleDay(scheduleTitle).toJson()],
+    'schedule': [_scheduleDay(scheduleTitle, date: scheduleDate).toJson()],
   };
 }
 
@@ -133,9 +191,9 @@ NowPlaying _nowPlaying(String title) {
   );
 }
 
-ScheduleDay _scheduleDay(String title) {
+ScheduleDay _scheduleDay(String title, {String? date}) {
   return ScheduleDay(
-    date: '2026-06-30',
+    date: date ?? _todayKey(),
     itemId: 'today',
     dayNumber: 0,
     shows: [
@@ -156,6 +214,14 @@ ScheduleDay _scheduleDay(String title) {
   );
 }
 
+String _todayKey() {
+  final now = DateTime.now();
+  final year = now.year.toString().padLeft(4, '0');
+  final month = now.month.toString().padLeft(2, '0');
+  final day = now.day.toString().padLeft(2, '0');
+  return '$year-$month-$day';
+}
+
 class _FailingScraper implements TalkSportPageScraper {
   int calls = 0;
 
@@ -163,5 +229,25 @@ class _FailingScraper implements TalkSportPageScraper {
   Future<TalkSportPagePayload> fetch(String stationSlug) async {
     calls++;
     throw StateError('Refresh failed');
+  }
+}
+
+class _SuccessfulScraper implements TalkSportPageScraper {
+  _SuccessfulScraper({
+    required this.scheduleTitle,
+    required this.nowPlayingTitle,
+  });
+
+  final String scheduleTitle;
+  final String nowPlayingTitle;
+  int calls = 0;
+
+  @override
+  Future<TalkSportPagePayload> fetch(String stationSlug) async {
+    calls++;
+    return TalkSportPagePayload(
+      nowPlaying: _nowPlaying(nowPlayingTitle),
+      schedule: [_scheduleDay(scheduleTitle)],
+    );
   }
 }
