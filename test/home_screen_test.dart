@@ -39,9 +39,9 @@ void main() {
     expect(find.byIcon(Icons.play_arrow_rounded), findsWidgets);
   });
 
-  testWidgets('shows catch-up date and 15/30 second dock controls', (
-    tester,
-  ) async {
+  testWidgets('shows catch-up date and dock skip controls', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1400, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
     final handler = _FakePlaybackController();
     addTearDown(handler.dispose);
 
@@ -77,6 +77,8 @@ void main() {
     expect(find.text('talkSPORT - Mon 29 Jun 2026'), findsOneWidget);
     expect(find.text('15s'), findsNWidgets(2));
     expect(find.text('30s'), findsNWidgets(2));
+    expect(find.text('1m'), findsOneWidget);
+    expect(find.text('4m'), findsOneWidget);
   });
 }
 

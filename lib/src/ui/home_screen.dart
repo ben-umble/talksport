@@ -1021,6 +1021,22 @@ class _TransportCluster extends StatelessWidget {
             compact: compact,
             onPressed: () => seekBy(const Duration(seconds: 30)),
           ),
+          if (!compact) ...[
+            SizedBox(width: compact ? 4 : 8),
+            _SkipTransportButton(
+              seconds: 60,
+              backward: false,
+              compact: compact,
+              onPressed: () => seekBy(const Duration(minutes: 1)),
+            ),
+            SizedBox(width: compact ? 4 : 8),
+            _SkipTransportButton(
+              seconds: 240,
+              backward: false,
+              compact: compact,
+              onPressed: () => seekBy(const Duration(minutes: 4)),
+            ),
+          ],
         ],
       ],
     );
@@ -1349,10 +1365,17 @@ class _SkipTransportButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final label = '${seconds}s';
+    final label = seconds >= 60 && seconds % 60 == 0
+        ? '${seconds ~/ 60}m'
+        : '${seconds}s';
     final direction = backward ? 'Back' : 'Forward';
+    final unit = seconds == 60
+        ? '1 minute'
+        : seconds > 60 && seconds % 60 == 0
+        ? '${seconds ~/ 60} minutes'
+        : '$seconds seconds';
     return Tooltip(
-      message: '$direction $seconds seconds',
+      message: '$direction $unit',
       child: Material(
         color: _paper,
         borderRadius: BorderRadius.circular(8),
