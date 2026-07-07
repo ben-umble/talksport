@@ -36,6 +36,8 @@ void main() {
     expect(find.text('World Cup GameDay Live'), findsOneWidget);
     expect(find.text('White & Jordan'), findsOneWidget);
     expect(find.text('Search shows'), findsOneWidget);
+    expect(find.text('Today 29 Jun'), findsOneWidget);
+    expect(find.text('Yesterday 28 Jun'), findsOneWidget);
     expect(find.byIcon(Icons.play_arrow_rounded), findsWidgets);
   });
 
@@ -272,6 +274,21 @@ class _FakeTalkSportApi extends TalkSportApi {
             ),
           ),
           _show(id: 'future', title: 'Later Show'),
+        ],
+      ),
+      ScheduleDay(
+        date: '2026-06-28',
+        dayNumber: -1,
+        itemId: 'yesterday',
+        shows: [
+          _show(
+            id: 'yesterday-show',
+            title: 'Yesterday Show',
+            recording: const Recording(
+              url: 'https://example.test/yesterday-show.mp3',
+              duration: 3600000,
+            ),
+          ),
         ],
       ),
     ];

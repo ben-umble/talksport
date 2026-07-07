@@ -1679,14 +1679,22 @@ String _playbackMeta(PlaybackItem item) {
 
 String _dayLabel(ScheduleDay day) {
   if (day.dayNumber == 0) {
-    return 'Today';
+    return _relativeDayLabel('Today', day);
   }
   if (day.dayNumber == -1) {
-    return 'Yesterday';
+    return _relativeDayLabel('Yesterday', day);
   }
   final date = DateTime.tryParse(day.date);
   if (date == null) {
     return day.date;
   }
   return DateFormat('EEE d MMM').format(date);
+}
+
+String _relativeDayLabel(String label, ScheduleDay day) {
+  final date = DateTime.tryParse(day.date);
+  if (date == null) {
+    return label;
+  }
+  return '$label ${DateFormat('d MMM').format(date)}';
 }
