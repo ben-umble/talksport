@@ -81,7 +81,7 @@ void main() {
     expect(find.text('4m'), findsOneWidget);
   });
 
-  testWidgets('refresh button requests fresh catch-up metadata', (
+  testWidgets('refresh button requests fresh catch-up schedule', (
     tester,
   ) async {
     final api = _FakeTalkSportApi();
@@ -106,6 +106,60 @@ void main() {
 
     expect(api.forcedScheduleRefreshes, 1);
     expect(api.forcedNowPlayingRefreshes, 1);
+  });
+
+  testWidgets('refresh button ignores live info refresh failures', (
+    tester,
+  ) async {
+    final api = _FakeTalkSportApi(failForcedNowPlaying: true);
+    final handler = _FakePlaybackController();
+    addTearDown(handler.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          talkSportApiProvider.overrideWithValue(api),
+          progressStoreProvider.overrideWithValue(ProgressStore.memory()),
+          playbackControllerProvider.overrideWithValue(handler),
+        ],
+        child: const MaterialApp(home: HomeScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('catch-up-refresh-button')));
+    await tester.pumpAndSettle();
+
+    expect(api.forcedScheduleRefreshes, 1);
+    expect(api.forcedNowPlayingRefreshes, 1);
+    expect(find.text('Could not refresh catch-up yet.'), findsNothing);
+  });
+
+  testWidgets('refresh button shows an error when catch-up refresh fails', (
+    tester,
+  ) async {
+    final api = _FakeTalkSportApi(failForcedSchedule: true);
+    final handler = _FakePlaybackController();
+    addTearDown(handler.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          talkSportApiProvider.overrideWithValue(api),
+          progressStoreProvider.overrideWithValue(ProgressStore.memory()),
+          playbackControllerProvider.overrideWithValue(handler),
+        ],
+        child: const MaterialApp(home: HomeScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('catch-up-refresh-button')));
+    await tester.pumpAndSettle();
+
+    expect(api.forcedScheduleRefreshes, 1);
+    expect(api.forcedNowPlayingRefreshes, 0);
+    expect(find.text('Could not refresh catch-up yet.'), findsOneWidget);
   });
 }
 
@@ -182,6 +236,13 @@ class _FakePlaybackController implements PlaybackController {
 }
 
 class _FakeTalkSportApi extends TalkSportApi {
+  _FakeTalkSportApi({
+    this.failForcedSchedule = false,
+    this.failForcedNowPlaying = false,
+  });
+
+  final bool failForcedSchedule;
+  final bool failForcedNowPlaying;
   int forcedScheduleRefreshes = 0;
   int forcedNowPlayingRefreshes = 0;
 
@@ -192,6 +253,9 @@ class _FakeTalkSportApi extends TalkSportApi {
   }) async {
     if (!allowCached) {
       forcedScheduleRefreshes++;
+      if (failForcedSchedule) {
+        throw StateError('Schedule refresh failed.');
+      }
     }
     return [
       ScheduleDay(
@@ -220,6 +284,9 @@ class _FakeTalkSportApi extends TalkSportApi {
   }) async {
     if (!allowCached) {
       forcedNowPlayingRefreshes++;
+      if (failForcedNowPlaying) {
+        throw StateError('Now playing refresh failed.');
+      }
     }
     return NowPlaying(
       title: 'World Cup GameDay Live',

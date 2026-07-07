@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -625,15 +627,12 @@ class _CatchUpContentState extends ConsumerState<_CatchUpContent> {
     setState(() => _refreshing = true);
     try {
       final api = ref.read(talkSportApiProvider);
-      await Future.wait([
-        api.fetchSchedule(station.slug, allowCached: false),
-        api.fetchNowPlaying(station.slug, allowCached: false),
-      ]);
+      await api.fetchSchedule(station.slug, allowCached: false);
       if (!mounted) {
         return;
       }
       ref.invalidate(scheduleProvider(station.slug));
-      ref.invalidate(nowPlayingProvider(station.slug));
+      unawaited(_refreshLiveInfo(station));
     } catch (_) {
       if (!mounted) {
         return;
@@ -645,6 +644,19 @@ class _CatchUpContentState extends ConsumerState<_CatchUpContent> {
       if (mounted) {
         setState(() => _refreshing = false);
       }
+    }
+  }
+
+  Future<void> _refreshLiveInfo(Station station) async {
+    try {
+      await ref
+          .read(talkSportApiProvider)
+          .fetchNowPlaying(station.slug, allowCached: false);
+      if (mounted) {
+        ref.invalidate(nowPlayingProvider(station.slug));
+      }
+    } catch (_) {
+      // Live metadata should not make a successful catch-up refresh look broken.
     }
   }
 }
