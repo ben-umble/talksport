@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../models/now_playing.dart';
 import '../models/schedule_day.dart';
+import '../models/show.dart';
 import 'talksport_metadata_cache.dart';
 import 'talksport_page_scraper.dart';
 
@@ -41,10 +42,15 @@ class TalkSportApi {
   final TalkSportMetadataCache _metadataCache;
   final Map<String, _ScheduleCacheEntry> _scheduleCache = {};
   final Map<String, Future<void>> _backgroundRefreshes = {};
+  final StreamController<String> _scheduleUpdates =
+      StreamController<String>.broadcast();
 
   static const _cachedMetadataMaxAge = Duration(days: 7);
   static const _backgroundRefreshAfter = Duration(minutes: 2);
+  static const _availabilityRefreshAfter = Duration(seconds: 30);
   static const _requestTimeout = Duration(seconds: 8);
+
+  Stream<String> get scheduleUpdates => _scheduleUpdates.stream;
 
   Future<List<ScheduleDay>> fetchSchedule(
     String stationSlug, {
@@ -69,9 +75,15 @@ class TalkSportApi {
       forceRefresh: !allowCached,
     );
     if (pagePayload != null) {
-      _scheduleCache[stationSlug] = _ScheduleCacheEntry(pagePayload.schedule);
-      unawaited(_metadataCache.write(stationSlug, pagePayload));
-      return pagePayload.schedule;
+      final stabilizedPayload = await _stabilizePayload(
+        stationSlug,
+        pagePayload,
+      );
+      _scheduleCache[stationSlug] = _ScheduleCacheEntry(
+        stabilizedPayload.schedule,
+      );
+      unawaited(_metadataCache.write(stationSlug, stabilizedPayload));
+      return stabilizedPayload.schedule;
     }
 
     final days = await _fetchScheduleFromApi(stationSlug);
@@ -105,8 +117,12 @@ class TalkSportApi {
       forceRefresh: !allowCached,
     );
     if (pagePayload != null) {
-      unawaited(_metadataCache.write(stationSlug, pagePayload));
-      return pagePayload.nowPlaying;
+      final stabilizedPayload = await _stabilizePayload(
+        stationSlug,
+        pagePayload,
+      );
+      unawaited(_metadataCache.write(stationSlug, stabilizedPayload));
+      return stabilizedPayload.nowPlaying;
     }
 
     final nowPlaying = await _fetchNowPlayingFromApi(stationSlug);
@@ -226,7 +242,10 @@ class TalkSportApi {
     String stationSlug,
     CachedTalkSportPagePayload cached,
   ) {
-    if (cached.age < _backgroundRefreshAfter ||
+    final refreshAfter = _needsAvailabilityProbe(cached.payload.schedule)
+        ? _availabilityRefreshAfter
+        : _backgroundRefreshAfter;
+    if (cached.age < refreshAfter ||
         _backgroundRefreshes.containsKey(stationSlug)) {
       return;
     }
@@ -242,8 +261,15 @@ class TalkSportApi {
     _backgroundRefreshes[stationSlug] = _fetchBestMetadataPayload(stationSlug)
         .then((payload) async {
           if (payload != null) {
-            await _metadataCache.write(stationSlug, payload);
-            _scheduleCache[stationSlug] = _ScheduleCacheEntry(payload.schedule);
+            final stabilizedPayload = await _stabilizePayload(
+              stationSlug,
+              payload,
+            );
+            await _metadataCache.write(stationSlug, stabilizedPayload);
+            _scheduleCache[stationSlug] = _ScheduleCacheEntry(
+              stabilizedPayload.schedule,
+            );
+            _notifyScheduleUpdated(stationSlug);
           }
         })
         .catchError((_) {})
@@ -341,6 +367,125 @@ class TalkSportApi {
   DateTime _localDate(DateTime value) {
     final local = value.toLocal();
     return DateTime(local.year, local.month, local.day);
+  }
+
+  Future<TalkSportPagePayload> _stabilizePayload(
+    String stationSlug,
+    TalkSportPagePayload freshPayload,
+  ) async {
+    final cachedPayload = await _cachedPagePayload(stationSlug);
+    if (cachedPayload == null) {
+      return freshPayload;
+    }
+
+    return TalkSportPagePayload(
+      nowPlaying: freshPayload.nowPlaying,
+      schedule: _mergeKnownRecordings(
+        freshPayload.schedule,
+        cachedPayload.payload.schedule,
+      ),
+    );
+  }
+
+  List<ScheduleDay> _mergeKnownRecordings(
+    List<ScheduleDay> freshDays,
+    List<ScheduleDay> cachedDays,
+  ) {
+    return [
+      for (final freshDay in freshDays)
+        ScheduleDay(
+          date: freshDay.date,
+          shows: [
+            for (final freshShow in freshDay.shows)
+              _showWithKnownRecording(
+                freshShow,
+                _findCachedShow(freshShow, cachedDays),
+              ),
+          ],
+          itemId: freshDay.itemId,
+          dayNumber: freshDay.dayNumber,
+        ),
+    ];
+  }
+
+  Show _showWithKnownRecording(Show freshShow, Show? cachedShow) {
+    if (freshShow.hasRecording ||
+        cachedShow == null ||
+        !cachedShow.hasRecording) {
+      return freshShow;
+    }
+
+    return Show(
+      id: freshShow.id,
+      title: freshShow.title,
+      programmeTitle: freshShow.programmeTitle,
+      startTime: freshShow.startTime,
+      endTime: freshShow.endTime,
+      description: freshShow.description,
+      images: freshShow.images,
+      recording: cachedShow.recording,
+      liveVideo: freshShow.liveVideo,
+      stationId: freshShow.stationId,
+      stationSlug: freshShow.stationSlug,
+    );
+  }
+
+  Show? _findCachedShow(Show freshShow, List<ScheduleDay> cachedDays) {
+    for (final cachedDay in cachedDays) {
+      for (final cachedShow in cachedDay.shows) {
+        if (_isSameShow(freshShow, cachedShow)) {
+          return cachedShow;
+        }
+      }
+    }
+    return null;
+  }
+
+  bool _isSameShow(Show a, Show b) {
+    if (a.id.isNotEmpty && a.id == b.id) {
+      return true;
+    }
+    return a.title == b.title &&
+        a.startTime == b.startTime &&
+        a.endTime == b.endTime;
+  }
+
+  bool _needsAvailabilityProbe(List<ScheduleDay> schedule) {
+    final displaySchedule = _scheduleForDisplay(schedule);
+    if (displaySchedule == null) {
+      return false;
+    }
+    ScheduleDay? today;
+    for (final day in displaySchedule) {
+      if (day.dayNumber == 0) {
+        today = day;
+        break;
+      }
+    }
+    if (today == null) {
+      return false;
+    }
+
+    final now = DateTime.now();
+    final completedShows = today.shows.where((show) {
+      final endedAt = show.endTime.toLocal();
+      return now.difference(endedAt) > const Duration(minutes: 20);
+    }).toList();
+    if (completedShows.isEmpty) {
+      return false;
+    }
+
+    return completedShows.any((show) => !show.hasRecording);
+  }
+
+  void _notifyScheduleUpdated(String stationSlug) {
+    if (!_scheduleUpdates.isClosed) {
+      _scheduleUpdates.add(stationSlug);
+    }
+  }
+
+  void dispose() {
+    unawaited(_scheduleUpdates.close());
   }
 }
 

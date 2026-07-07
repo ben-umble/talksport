@@ -13,7 +13,11 @@ final stationRepositoryProvider = Provider<StationRepository>(
   (ref) => const StationRepository(),
 );
 
-final talkSportApiProvider = Provider<TalkSportApi>((ref) => TalkSportApi());
+final talkSportApiProvider = Provider<TalkSportApi>((ref) {
+  final api = TalkSportApi();
+  ref.onDispose(api.dispose);
+  return api;
+});
 
 final progressStoreProvider = Provider<ProgressStore>(
   (ref) => throw UnimplementedError('ProgressStore must be overridden.'),
@@ -34,6 +38,7 @@ final selectedDayNumberProvider = StateProvider<int>((ref) => 0);
 final scheduleProvider = FutureProvider.autoDispose
     .family<List<ScheduleDay>, String>((ref, stationSlug) {
       ref.watch(_scheduleTickerProvider);
+      ref.watch(_scheduleUpdatesProvider(stationSlug));
       return ref.watch(talkSportApiProvider).fetchSchedule(stationSlug);
     });
 
@@ -50,3 +55,11 @@ final _nowPlayingTickerProvider = StreamProvider.autoDispose<void>((ref) {
 final _scheduleTickerProvider = StreamProvider.autoDispose<void>((ref) {
   return Stream<void>.periodic(const Duration(seconds: 15));
 });
+
+final _scheduleUpdatesProvider = StreamProvider.autoDispose
+    .family<void, String>((ref, stationSlug) {
+      final api = ref.watch(talkSportApiProvider);
+      return api.scheduleUpdates
+          .where((updatedStationSlug) => updatedStationSlug == stationSlug)
+          .map((_) {});
+    });

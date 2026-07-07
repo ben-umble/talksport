@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:talksport_companion/src/data/talksport_api.dart';
 import 'package:talksport_companion/src/data/talksport_page_scraper.dart';
 import 'package:talksport_companion/src/models/now_playing.dart';
+import 'package:talksport_companion/src/models/recording.dart';
 import 'package:talksport_companion/src/models/schedule_day.dart';
 import 'package:talksport_companion/src/models/show.dart';
 
@@ -90,7 +91,7 @@ void main() {
       SharedPreferences.setMockInitialValues({
         'talksport.metadata.talksport': jsonEncode(
           _cachedPayloadJson(
-            age: const Duration(minutes: 1),
+            age: const Duration(seconds: 10),
             nowPlayingTitle: 'Cached live show',
             scheduleTitle: 'Cached White & Jordan',
             scheduleDate: _todayKey(),
@@ -111,13 +112,76 @@ void main() {
   );
 
   test(
+    'notifies listeners when background schedule metadata refreshes',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'talksport.metadata.talksport': jsonEncode(
+          _cachedPayloadJson(
+            age: const Duration(minutes: 3),
+            nowPlayingTitle: 'Cached live show',
+            scheduleTitle: 'Cached White & Jordan',
+            scheduleDate: _todayKey(),
+          ),
+        ),
+      });
+      final scraper = _SuccessfulScraper(
+        scheduleTitle: 'Fresh White & Jordan',
+        nowPlayingTitle: 'Fresh live show',
+      );
+      final api = TalkSportApi(
+        client: MockClient((_) async => throw StateError('HTTP was used')),
+        pageScraper: scraper,
+      );
+      addTearDown(api.dispose);
+
+      final update = api.scheduleUpdates.first;
+      final schedule = await api.fetchSchedule('talksport');
+
+      expect(schedule.single.shows.single.title, 'Cached White & Jordan');
+      await expectLater(update, completion('talksport'));
+      final refreshed = await api.fetchSchedule('talksport');
+      expect(refreshed.single.shows.single.title, 'Fresh White & Jordan');
+    },
+  );
+
+  test('keeps cached recording when fresh metadata omits it', () async {
+    SharedPreferences.setMockInitialValues({
+      'talksport.metadata.talksport': jsonEncode(
+        _cachedPayloadJson(
+          age: const Duration(minutes: 1),
+          nowPlayingTitle: 'Cached live show',
+          scheduleTitle: 'White & Jordan',
+          scheduleDate: _todayKey(),
+          withRecording: true,
+        ),
+      ),
+    });
+    final scraper = _SuccessfulScraper(
+      scheduleTitle: 'White & Jordan',
+      nowPlayingTitle: 'Fresh live show',
+    );
+    final api = TalkSportApi(
+      client: MockClient((_) async => throw StateError('HTTP was used')),
+      pageScraper: scraper,
+    );
+    addTearDown(api.dispose);
+
+    final schedule = await api.fetchSchedule('talksport', allowCached: false);
+
+    expect(
+      schedule.single.shows.single.recording?.url,
+      'https://audio.test/show.mp3',
+    );
+  });
+
+  test(
     'normalizes stale-date cached schedule instead of calling it today',
     () async {
       final cachedDate = DateTime.now().subtract(const Duration(days: 3));
       SharedPreferences.setMockInitialValues({
         'talksport.metadata.talksport': jsonEncode(
           _cachedPayloadJson(
-            age: const Duration(minutes: 1),
+            age: const Duration(seconds: 10),
             nowPlayingTitle: 'Cached live show',
             scheduleTitle: 'Old cached show',
             scheduleDate: _dateKey(cachedDate),
@@ -144,7 +208,7 @@ void main() {
       SharedPreferences.setMockInitialValues({
         'talksport.metadata.talksport': jsonEncode(
           _cachedPayloadJson(
-            age: const Duration(minutes: 1),
+            age: const Duration(seconds: 10),
             nowPlayingTitle: 'Cached live show',
             scheduleTitle: 'Cached White & Jordan',
             scheduleDate: _todayKey(),
@@ -196,12 +260,19 @@ Map<String, dynamic> _cachedPayloadJson({
   required String nowPlayingTitle,
   required String scheduleTitle,
   required String scheduleDate,
+  bool withRecording = false,
 }) {
   final now = DateTime.now();
   return {
     'updatedAtMs': now.subtract(age).millisecondsSinceEpoch,
     'onAirNow': _nowPlaying(nowPlayingTitle).toJson(),
-    'schedule': [_scheduleDay(scheduleTitle, date: scheduleDate).toJson()],
+    'schedule': [
+      _scheduleDay(
+        scheduleTitle,
+        date: scheduleDate,
+        withRecording: withRecording,
+      ).toJson(),
+    ],
   };
 }
 
@@ -223,7 +294,12 @@ NowPlaying _nowPlaying(String title) {
   );
 }
 
-ScheduleDay _scheduleDay(String title, {String? date}) {
+ScheduleDay _scheduleDay(
+  String title, {
+  String? date,
+  bool withRecording = false,
+}) {
+  final dayDate = DateTime.tryParse(date ?? _todayKey()) ?? DateTime.now();
   return ScheduleDay(
     date: date ?? _todayKey(),
     itemId: 'today',
@@ -233,11 +309,16 @@ ScheduleDay _scheduleDay(String title, {String? date}) {
         id: 'show-1',
         title: title,
         programmeTitle: title,
-        startTime: DateTime.utc(2026, 6, 30, 10),
-        endTime: DateTime.utc(2026, 6, 30, 13),
+        startTime: DateTime(dayDate.year, dayDate.month, dayDate.day, 10),
+        endTime: DateTime(dayDate.year, dayDate.month, dayDate.day, 13),
         description: 'Cached show description.',
         images: const {},
-        recording: null,
+        recording: withRecording
+            ? const Recording(
+                url: 'https://audio.test/show.mp3',
+                duration: 10800000,
+              )
+            : null,
         liveVideo: const {},
         stationId: 'talksport',
         stationSlug: 'talksport',
