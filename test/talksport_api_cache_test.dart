@@ -174,6 +174,37 @@ void main() {
     );
   });
 
+  test('forced refresh uses fresh scraper recordings', () async {
+    SharedPreferences.setMockInitialValues({
+      'talksport.metadata.talksport': jsonEncode(
+        _cachedPayloadJson(
+          age: const Duration(minutes: 1),
+          nowPlayingTitle: 'Cached live show',
+          scheduleTitle: 'White & Jordan',
+          scheduleDate: _todayKey(),
+        ),
+      ),
+    });
+    final scraper = _SuccessfulScraper(
+      scheduleTitle: 'White & Jordan',
+      nowPlayingTitle: 'Fresh live show',
+      withRecording: true,
+    );
+    final api = TalkSportApi(
+      client: MockClient((_) async => throw StateError('HTTP was used')),
+      pageScraper: scraper,
+    );
+    addTearDown(api.dispose);
+
+    final schedule = await api.fetchSchedule('talksport', allowCached: false);
+
+    expect(
+      schedule.single.shows.single.recording?.url,
+      'https://audio.test/show.mp3',
+    );
+    expect(scraper.forceRefreshes, [true]);
+  });
+
   test(
     'normalizes stale-date cached schedule instead of calling it today',
     () async {
@@ -353,11 +384,14 @@ class _SuccessfulScraper implements TalkSportPageScraper {
   _SuccessfulScraper({
     required this.scheduleTitle,
     required this.nowPlayingTitle,
+    this.withRecording = false,
   });
 
   final String scheduleTitle;
   final String nowPlayingTitle;
+  final bool withRecording;
   int calls = 0;
+  final List<bool> forceRefreshes = [];
 
   @override
   Future<TalkSportPagePayload> fetch(
@@ -365,9 +399,10 @@ class _SuccessfulScraper implements TalkSportPageScraper {
     bool forceRefresh = false,
   }) async {
     calls++;
+    forceRefreshes.add(forceRefresh);
     return TalkSportPagePayload(
       nowPlaying: _nowPlaying(nowPlayingTitle),
-      schedule: [_scheduleDay(scheduleTitle)],
+      schedule: [_scheduleDay(scheduleTitle, withRecording: withRecording)],
     );
   }
 }

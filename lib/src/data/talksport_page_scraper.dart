@@ -117,7 +117,9 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
     while (DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 900));
       try {
-        lastResult = await controller.executeScript(_extractorScript);
+        lastResult = await controller.executeScript(
+          forceRefresh ? _latestExtractorScript : _extractorScript,
+        );
         final payload = _payloadFromScriptResult(lastResult);
         if (payload != null) {
           _cache[stationSlug] = _PageCacheEntry(payload, DateTime.now());
@@ -295,5 +297,228 @@ const _extractorScript = r'''
   }
 
   return JSON.stringify(extractPayload());
+})()
+''';
+
+const _latestExtractorScript = r'''
+(() => {
+  function decodeScriptChunks() {
+    const chunks = [];
+    const scripts = Array.from(document.scripts || []);
+    for (const script of scripts) {
+      const text = script.textContent || '';
+      if (!text.includes('__next_f.push')) continue;
+      const re = /self\.__next_f\.push\(\[1,"([\s\S]*?)"\]\)/g;
+      let match;
+      while ((match = re.exec(text)) !== null) {
+        try {
+          chunks.push(JSON.parse('"' + match[1] + '"'));
+        } catch (_) {
+          chunks.push(match[1]);
+        }
+      }
+    }
+    return chunks.join('\n');
+  }
+
+  function extractEmbeddedPayload() {
+    const joined = decodeScriptChunks();
+    const marker = '"onAirNow":';
+    const markerIndex = joined.indexOf(marker);
+    if (markerIndex < 0) {
+      return { error: 'onAirNow marker missing', length: joined.length };
+    }
+
+    const objectStart = joined.lastIndexOf('{', markerIndex);
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = objectStart; i < joined.length; i++) {
+      const ch = joined[i];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (ch === '{') depth++;
+      if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          const candidate = joined.slice(objectStart, i + 1);
+          try {
+            const obj = JSON.parse(candidate);
+            return {
+              onAirNow: obj.onAirNow,
+              schedule: obj.schedule,
+              stationSlug: obj.stationSlug || (obj.onAirNow && obj.onAirNow.stationSlug),
+            };
+          } catch (error) {
+            return { error: String(error) };
+          }
+        }
+      }
+    }
+
+    return { error: 'payload end missing', length: joined.length };
+  }
+
+  function stationSlugFromPath() {
+    const parts = location.pathname.split('/').filter(Boolean);
+    const playIndex = parts.indexOf('play');
+    if (playIndex >= 0 && parts[playIndex + 1]) {
+      return parts[playIndex + 1];
+    }
+    return 'talksport';
+  }
+
+  function startLatestFetch() {
+    const stationSlug = stationSlugFromPath();
+    const key = '__talksportCompanionLatestPayload';
+    const existing = window[key];
+    const now = Date.now();
+    const firstStartedAt =
+      existing && existing.stationSlug === stationSlug
+        ? existing.firstStartedAt || existing.startedAt
+        : now;
+    if (
+      existing &&
+      existing.stationSlug === stationSlug &&
+      existing.status !== 'error' &&
+      now - existing.startedAt < 20000
+    ) {
+      return existing;
+    }
+    if (
+      existing &&
+      existing.stationSlug === stationSlug &&
+      existing.status === 'error' &&
+      now - existing.updatedAt < 1500
+    ) {
+      return existing;
+    }
+
+    const state = {
+      status: 'loading',
+      stationSlug,
+      startedAt: now,
+      firstStartedAt,
+    };
+    window[key] = state;
+
+    (async () => {
+      try {
+        const embedded = extractEmbeddedPayload();
+        const refresh = Date.now();
+        const requestOptions = {
+          cache: 'no-store',
+          credentials: 'include',
+          headers: {
+            accept: 'application/json,text/plain,*/*',
+          },
+        };
+
+        const scheduleResponse = await fetch(
+          `/play/api/schedule/${encodeURIComponent(stationSlug)}?refresh=${refresh}`,
+          requestOptions,
+        );
+        if (!scheduleResponse.ok) {
+          throw new Error(`schedule status ${scheduleResponse.status}`);
+        }
+        const schedule = await scheduleResponse.json();
+        if (!Array.isArray(schedule)) {
+          throw new Error('schedule response was not an array');
+        }
+
+        let onAirNow = embedded && !embedded.error ? embedded.onAirNow : null;
+        try {
+          const nowPlayingResponse = await fetch(
+            `/play/api/onAirNow/${encodeURIComponent(stationSlug)}?refresh=${refresh}`,
+            requestOptions,
+          );
+          if (nowPlayingResponse.ok) {
+            const nowPlaying = await nowPlayingResponse.json();
+            if (nowPlaying && typeof nowPlaying === 'object') {
+              onAirNow = nowPlaying;
+            }
+          }
+        } catch (_) {}
+
+        if (!onAirNow) {
+          throw new Error('onAirNow metadata missing');
+        }
+
+        window[key] = {
+          status: 'ready',
+          stationSlug,
+          startedAt: state.startedAt,
+          firstStartedAt: state.firstStartedAt,
+          updatedAt: Date.now(),
+          onAirNow,
+          schedule,
+          source: 'schedule-api',
+        };
+      } catch (error) {
+        window[key] = {
+          status: 'error',
+          stationSlug,
+          startedAt: state.startedAt,
+          firstStartedAt: state.firstStartedAt,
+          updatedAt: Date.now(),
+          error: String(error),
+        };
+      }
+    })();
+
+    return state;
+  }
+
+  const latest = startLatestFetch();
+  if (latest.status === 'ready') {
+    return JSON.stringify({
+      onAirNow: latest.onAirNow,
+      schedule: latest.schedule,
+      stationSlug: latest.stationSlug,
+      source: latest.source,
+    });
+  }
+
+  if (latest.status === 'error') {
+    if (Date.now() - (latest.firstStartedAt || latest.startedAt) < 12000) {
+      return JSON.stringify({
+        error: 'metadata fetch retrying',
+        status: 'loading',
+        apiError: latest.error,
+      });
+    }
+    const embedded = extractEmbeddedPayload();
+    if (!embedded.error) {
+      return JSON.stringify({
+        onAirNow: embedded.onAirNow,
+        schedule: embedded.schedule,
+        stationSlug: embedded.stationSlug,
+        source: 'embedded-fallback',
+        apiError: latest.error,
+      });
+    }
+    return JSON.stringify({
+      error: latest.error || embedded.error,
+      apiError: latest.error,
+      embeddedError: embedded.error,
+    });
+  }
+
+  return JSON.stringify({
+    error: 'metadata fetch loading',
+    status: latest.status,
+  });
 })()
 ''';
