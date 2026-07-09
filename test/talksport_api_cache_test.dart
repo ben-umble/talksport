@@ -206,6 +206,33 @@ void main() {
   });
 
   test(
+    'forced refresh does not return stale schedule when scrape fails',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'talksport.metadata.talksport': jsonEncode(
+          _cachedPayloadJson(
+            age: const Duration(minutes: 1),
+            nowPlayingTitle: 'Cached live show',
+            scheduleTitle: 'Cached White & Jordan',
+            scheduleDate: _todayKey(),
+            withRecording: true,
+          ),
+        ),
+      });
+      final api = TalkSportApi(
+        client: MockClient((_) async => throw StateError('HTTP was used')),
+        pageScraper: _FailingScraper(),
+      );
+      addTearDown(api.dispose);
+
+      await expectLater(
+        api.fetchSchedule('talksport', allowCached: false),
+        throwsA(isA<TalkSportApiException>()),
+      );
+    },
+  );
+
+  test(
     'normalizes stale-date cached schedule instead of calling it today',
     () async {
       final cachedDate = DateTime.now().subtract(const Duration(days: 3));

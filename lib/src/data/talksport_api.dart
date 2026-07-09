@@ -93,9 +93,11 @@ class TalkSportApi {
       return days;
     }
 
-    final displayCache = _scheduleForDisplay(cache?.days);
-    if (displayCache != null) {
-      return displayCache;
+    if (allowCached) {
+      final displayCache = _scheduleForDisplay(cache?.days);
+      if (displayCache != null) {
+        return displayCache;
+      }
     }
     throw const TalkSportApiException('Schedule is unavailable.');
   }
@@ -211,9 +213,15 @@ class TalkSportApi {
       return null;
     }
     try {
+      final firstTimeout = forceRefresh
+          ? const Duration(seconds: 45)
+          : const Duration(seconds: 15);
+      final retryTimeout = forceRefresh
+          ? const Duration(seconds: 20)
+          : const Duration(seconds: 3);
       final payload = await _pagePayloadWithTimeout(
         pageScraper.fetch(stationSlug, forceRefresh: forceRefresh),
-        const Duration(seconds: 15),
+        firstTimeout,
       );
       if (payload != null) {
         return payload;
@@ -221,7 +229,7 @@ class TalkSportApi {
 
       return _pagePayloadWithTimeout(
         pageScraper.fetch(stationSlug, forceRefresh: forceRefresh),
-        const Duration(seconds: 3),
+        retryTimeout,
       );
     } catch (_) {
       return null;

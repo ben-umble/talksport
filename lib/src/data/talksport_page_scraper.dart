@@ -98,11 +98,30 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
     String stationSlug, {
     required bool forceRefresh,
   }) async {
+    try {
+      return await _loadWithCurrentController(
+        stationSlug,
+        forceRefresh: forceRefresh,
+      );
+    } catch (error) {
+      if (!forceRefresh) {
+        rethrow;
+      }
+      await _resetController();
+      return _loadWithCurrentController(stationSlug, forceRefresh: true);
+    }
+  }
+
+  Future<TalkSportPagePayload> _loadWithCurrentController(
+    String stationSlug, {
+    required bool forceRefresh,
+  }) async {
     await _ensureInitialized();
     final controller = _controller;
     if (controller == null) {
       throw const TalkSportPageScraperException('WebView is not initialized.');
     }
+    await controller.setCacheDisabled(forceRefresh);
     final cacheBuster = forceRefresh
         ? '?refresh=${DateTime.now().millisecondsSinceEpoch}'
         : '';
@@ -110,7 +129,9 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
       'https://talksport.com/play/$stationSlug$cacheBuster',
     );
 
-    final deadline = DateTime.now().add(const Duration(seconds: 35));
+    final deadline = DateTime.now().add(
+      forceRefresh ? const Duration(seconds: 18) : const Duration(seconds: 35),
+    );
     Object? lastResult;
     Object? lastError;
 
@@ -134,6 +155,20 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
       'Timed out while reading talkSPORT page metadata. '
       'Last result: $lastResult. Last error: $lastError',
     );
+  }
+
+  Future<void> _resetController() async {
+    final controller = _controller;
+    _controller = null;
+    _initializing = null;
+    if (controller != null) {
+      try {
+        await controller.clearCache();
+      } catch (_) {}
+      try {
+        await controller.dispose();
+      } catch (_) {}
+    }
   }
 
   TalkSportPagePayload? _payloadFromScriptResult(Object? result) {
