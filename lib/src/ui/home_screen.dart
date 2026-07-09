@@ -505,11 +505,23 @@ class _CatchUpContent extends ConsumerStatefulWidget {
 
 class _CatchUpContentState extends ConsumerState<_CatchUpContent> {
   bool _refreshing = false;
+  List<ScheduleDay>? _refreshedDays;
+  DateTime? _refreshedAt;
+
+  @override
+  void didUpdateWidget(covariant _CatchUpContent oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.station.slug != widget.station.slug ||
+        _hasNewerOrRicherSchedule(widget.days, _refreshedDays)) {
+      _refreshedDays = null;
+      _refreshedAt = null;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final station = widget.station;
-    final days = widget.days;
+    final days = _refreshedDays ?? widget.days;
     final selectedDayNumber = ref.watch(selectedDayNumberProvider);
     final query = ref.watch(searchQueryProvider);
     final selectedDay = days.firstWhere(
@@ -520,6 +532,9 @@ class _CatchUpContentState extends ConsumerState<_CatchUpContent> {
     );
     final shows = filterShows(selectedDay.shows, query);
     final availableCount = playableShows(selectedDay.shows).length;
+    final updatedLabel = _refreshedAt == null
+        ? ''
+        : ' - Updated ${DateFormat('HH:mm').format(_refreshedAt!)}';
 
     return Container(
       decoration: BoxDecoration(
@@ -550,7 +565,7 @@ class _CatchUpContentState extends ConsumerState<_CatchUpContent> {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            '$availableCount available on ${_dayLabel(selectedDay)}',
+                            '$availableCount available on ${_dayLabel(selectedDay)}$updatedLabel',
                             style: Theme.of(
                               context,
                             ).textTheme.bodyMedium?.copyWith(color: _mutedInk),
@@ -627,10 +642,17 @@ class _CatchUpContentState extends ConsumerState<_CatchUpContent> {
     setState(() => _refreshing = true);
     try {
       final api = ref.read(talkSportApiProvider);
-      await api.fetchSchedule(station.slug, allowCached: false);
+      final refreshedSchedule = await api.fetchSchedule(
+        station.slug,
+        allowCached: false,
+      );
       if (!mounted) {
         return;
       }
+      setState(() {
+        _refreshedDays = catchUpDays(refreshedSchedule);
+        _refreshedAt = DateTime.now();
+      });
       ref.invalidate(scheduleProvider(station.slug));
       unawaited(_refreshLiveInfo(station));
     } catch (_) {
@@ -658,6 +680,46 @@ class _CatchUpContentState extends ConsumerState<_CatchUpContent> {
     } catch (_) {
       // Live metadata should not make a successful catch-up refresh look broken.
     }
+  }
+
+  bool _hasNewerOrRicherSchedule(
+    List<ScheduleDay> incomingDays,
+    List<ScheduleDay>? currentDays,
+  ) {
+    if (currentDays == null || currentDays.isEmpty || incomingDays.isEmpty) {
+      return false;
+    }
+    final incomingLatest = _latestScheduleDate(incomingDays);
+    final currentLatest = _latestScheduleDate(currentDays);
+    if (incomingLatest == null || currentLatest == null) {
+      return false;
+    }
+    if (incomingLatest.isAfter(currentLatest)) {
+      return true;
+    }
+    return _playableCount(incomingDays) > _playableCount(currentDays);
+  }
+
+  DateTime? _latestScheduleDate(List<ScheduleDay> days) {
+    DateTime? latest;
+    for (final day in days) {
+      final date = DateTime.tryParse(day.date);
+      if (date == null) {
+        continue;
+      }
+      if (latest == null || date.isAfter(latest)) {
+        latest = date;
+      }
+    }
+    return latest;
+  }
+
+  int _playableCount(List<ScheduleDay> days) {
+    var count = 0;
+    for (final day in days) {
+      count += playableShows(day.shows).length;
+    }
+    return count;
   }
 }
 

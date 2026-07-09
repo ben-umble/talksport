@@ -110,6 +110,64 @@ void main() {
     expect(api.forcedNowPlayingRefreshes, 1);
   });
 
+  testWidgets('refresh button applies fresh catch-up rows immediately', (
+    tester,
+  ) async {
+    final api = _FakeTalkSportApi(
+      forcedSchedule: [
+        ScheduleDay(
+          date: '2026-06-29',
+          dayNumber: 0,
+          itemId: 'today',
+          shows: [
+            _show(
+              id: 'white-and-jordan',
+              title: 'White & Jordan',
+              recording: const Recording(
+                url: 'https://example.test/white-and-jordan.mp3',
+                duration: 10800000,
+              ),
+            ),
+            _show(
+              id: 'fresh-show',
+              title: 'Freshly Available Show',
+              recording: const Recording(
+                url: 'https://example.test/fresh-show.mp3',
+                duration: 3600000,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+    final handler = _FakePlaybackController();
+    addTearDown(handler.dispose);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          talkSportApiProvider.overrideWithValue(api),
+          progressStoreProvider.overrideWithValue(ProgressStore.memory()),
+          playbackControllerProvider.overrideWithValue(handler),
+        ],
+        child: const MaterialApp(home: HomeScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Freshly Available Show'), findsNothing);
+    expect(find.text('1 available on Today 29 Jun'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('catch-up-refresh-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Freshly Available Show'), findsOneWidget);
+    expect(
+      find.textContaining('2 available on Today 29 Jun - Updated'),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('refresh button ignores live info refresh failures', (
     tester,
   ) async {
@@ -241,10 +299,12 @@ class _FakeTalkSportApi extends TalkSportApi {
   _FakeTalkSportApi({
     this.failForcedSchedule = false,
     this.failForcedNowPlaying = false,
+    this.forcedSchedule,
   });
 
   final bool failForcedSchedule;
   final bool failForcedNowPlaying;
+  final List<ScheduleDay>? forcedSchedule;
   int forcedScheduleRefreshes = 0;
   int forcedNowPlayingRefreshes = 0;
 
@@ -257,6 +317,10 @@ class _FakeTalkSportApi extends TalkSportApi {
       forcedScheduleRefreshes++;
       if (failForcedSchedule) {
         throw StateError('Schedule refresh failed.');
+      }
+      final forced = forcedSchedule;
+      if (forced != null) {
+        return forced;
       }
     }
     return [
