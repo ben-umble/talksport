@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -12,31 +13,87 @@ import 'package:talksport_companion/src/models/schedule_day.dart';
 import 'package:talksport_companion/src/models/show.dart';
 
 void main() {
-  test('uses WebView schedule metadata before the direct API', () async {
+  test('uses direct schedule metadata before the WebView', () async {
     SharedPreferences.setMockInitialValues({});
     final scraper = _SuccessfulScraper(
       scheduleTitle: 'WebView show',
       nowPlayingTitle: 'WebView live show',
     );
     final api = TalkSportApi(
-      client: MockClient((_) async => throw StateError('HTTP was used')),
+      client: MockClient((request) async {
+        expect(request.url.queryParameters['refresh'], isNotEmpty);
+        if (request.url.path.contains('/schedule/')) {
+          return http.Response(
+            jsonEncode([_scheduleDay('API show').toJson()]),
+            200,
+          );
+        }
+        return http.Response(
+          jsonEncode(_nowPlaying('API live show').toJson()),
+          200,
+        );
+      }),
       pageScraper: scraper,
     );
 
     final schedule = await api.fetchSchedule('talksport');
 
-    expect(schedule.single.shows.single.title, 'WebView show');
-    expect(scraper.calls, 1);
+    expect(schedule.single.shows.single.title, 'API show');
+    expect(scraper.calls, 0);
   });
 
-  test('uses WebView now-playing metadata before the direct API', () async {
+  test(
+    'falls back to WebView schedule metadata after verification HTML',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final scraper = _SuccessfulScraper(
+        scheduleTitle: 'WebView show',
+        nowPlayingTitle: 'WebView live show',
+      );
+      final api = TalkSportApi(
+        client: MockClient((_) async => http.Response('<html></html>', 200)),
+        pageScraper: scraper,
+      );
+
+      final schedule = await api.fetchSchedule('talksport');
+
+      expect(schedule.single.shows.single.title, 'WebView show');
+      expect(scraper.calls, 1);
+    },
+  );
+
+  test('uses direct now-playing metadata before the WebView', () async {
     SharedPreferences.setMockInitialValues({});
     final scraper = _SuccessfulScraper(
       scheduleTitle: 'WebView show',
       nowPlayingTitle: 'WebView live show',
     );
     final api = TalkSportApi(
-      client: MockClient((_) async => throw StateError('HTTP was used')),
+      client: MockClient((request) async {
+        expect(request.url.path, '/play/api/onAirNow/talksport');
+        expect(request.url.queryParameters['refresh'], isNotEmpty);
+        return http.Response(
+          jsonEncode(_nowPlaying('API live show').toJson()),
+          200,
+        );
+      }),
+      pageScraper: scraper,
+    );
+
+    final nowPlaying = await api.fetchNowPlaying('talksport');
+
+    expect(nowPlaying.title, 'API live show');
+    expect(scraper.calls, 0);
+  });
+
+  test('falls back to WebView now-playing after verification HTML', () async {
+    SharedPreferences.setMockInitialValues({});
+    final scraper = _SuccessfulScraper(
+      scheduleTitle: 'WebView show',
+      nowPlayingTitle: 'WebView live show',
+    );
+    final api = TalkSportApi(
+      client: MockClient((_) async => http.Response('<html></html>', 200)),
       pageScraper: scraper,
     );
 
@@ -45,45 +102,6 @@ void main() {
     expect(nowPlaying.title, 'WebView live show');
     expect(scraper.calls, 1);
   });
-
-  test('uses direct schedule API only when no scraper is available', () async {
-    SharedPreferences.setMockInitialValues({});
-    final api = TalkSportApi(
-      createDefaultPageScraper: false,
-      client: MockClient((request) async {
-        expect(request.url.path, '/play/api/schedule/talksport');
-        return http.Response(
-          jsonEncode([_scheduleDay('API show').toJson()]),
-          200,
-        );
-      }),
-    );
-
-    final schedule = await api.fetchSchedule('talksport');
-
-    expect(schedule.single.shows.single.title, 'API show');
-  });
-
-  test(
-    'uses direct now-playing API only when no scraper is available',
-    () async {
-      SharedPreferences.setMockInitialValues({});
-      final api = TalkSportApi(
-        createDefaultPageScraper: false,
-        client: MockClient((request) async {
-          expect(request.url.path, '/play/api/onAirNow/talksport');
-          return http.Response(
-            jsonEncode(_nowPlaying('API live show').toJson()),
-            200,
-          );
-        }),
-      );
-
-      final nowPlaying = await api.fetchNowPlaying('talksport');
-
-      expect(nowPlaying.title, 'API live show');
-    },
-  );
 
   test(
     'returns current-day cached schedule without blocking on refresh',
@@ -229,6 +247,64 @@ void main() {
         api.fetchSchedule('talksport', allowCached: false),
         throwsA(isA<TalkSportApiException>()),
       );
+    },
+  );
+
+  test('a timed-out scraper is reset before the next refresh', () async {
+    SharedPreferences.setMockInitialValues({});
+    final scraper = _RecoveringScraper();
+    final api = TalkSportApi(
+      client: MockClient((_) async => http.Response('<html></html>', 200)),
+      pageScraper: scraper,
+      pageRequestTimeout: const Duration(milliseconds: 10),
+    );
+    addTearDown(api.dispose);
+
+    await expectLater(
+      api.fetchSchedule('talksport', allowCached: false),
+      throwsA(isA<TalkSportApiException>()),
+    );
+
+    final schedule = await api.fetchSchedule('talksport', allowCached: false);
+
+    expect(scraper.resetCalls, 1);
+    expect(scraper.calls, 2);
+    expect(schedule.single.shows.single.title, 'Recovered White & Jordan');
+  });
+
+  test(
+    'resume recovery resets the scraper and publishes fresh metadata',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'talksport.metadata.talksport': jsonEncode(
+          _cachedPayloadJson(
+            age: const Duration(days: 1),
+            nowPlayingTitle: 'Cached live show',
+            scheduleTitle: 'Cached White & Jordan',
+            scheduleDate: _todayKey(),
+          ),
+        ),
+      });
+      final scraper = _SuccessfulScraper(
+        scheduleTitle: 'Resumed White & Jordan',
+        nowPlayingTitle: 'Resumed live show',
+      );
+      final api = TalkSportApi(
+        client: MockClient((_) async => http.Response('<html></html>', 200)),
+        pageScraper: scraper,
+      );
+      addTearDown(api.dispose);
+
+      final refreshComplete = api.scheduleUpdates.skip(1).first;
+      await api.recoverAfterResume(['talksport']);
+      final cachedSchedule = await api.fetchSchedule('talksport');
+      expect(cachedSchedule.single.shows.single.title, 'Cached White & Jordan');
+      await refreshComplete;
+      final schedule = await api.fetchSchedule('talksport');
+
+      expect(scraper.resetCalls, 1);
+      expect(scraper.forceRefreshes, [true]);
+      expect(schedule.single.shows.single.title, 'Resumed White & Jordan');
     },
   );
 
@@ -394,7 +470,7 @@ String _dateKey(DateTime date) {
   return '$year-$month-$day';
 }
 
-class _FailingScraper implements TalkSportPageScraper {
+class _FailingScraper extends TalkSportPageScraper {
   int calls = 0;
 
   @override
@@ -407,7 +483,7 @@ class _FailingScraper implements TalkSportPageScraper {
   }
 }
 
-class _SuccessfulScraper implements TalkSportPageScraper {
+class _SuccessfulScraper extends TalkSportPageScraper {
   _SuccessfulScraper({
     required this.scheduleTitle,
     required this.nowPlayingTitle,
@@ -418,7 +494,13 @@ class _SuccessfulScraper implements TalkSportPageScraper {
   final String nowPlayingTitle;
   final bool withRecording;
   int calls = 0;
+  int resetCalls = 0;
   final List<bool> forceRefreshes = [];
+
+  @override
+  Future<void> reset() async {
+    resetCalls++;
+  }
 
   @override
   Future<TalkSportPagePayload> fetch(
@@ -431,5 +513,34 @@ class _SuccessfulScraper implements TalkSportPageScraper {
       nowPlaying: _nowPlaying(nowPlayingTitle),
       schedule: [_scheduleDay(scheduleTitle, withRecording: withRecording)],
     );
+  }
+}
+
+class _RecoveringScraper extends TalkSportPageScraper {
+  int calls = 0;
+  int resetCalls = 0;
+  bool _recovered = false;
+
+  @override
+  Future<TalkSportPagePayload> fetch(
+    String stationSlug, {
+    bool forceRefresh = false,
+  }) {
+    calls++;
+    if (!_recovered) {
+      return Completer<TalkSportPagePayload>().future;
+    }
+    return Future.value(
+      TalkSportPagePayload(
+        nowPlaying: _nowPlaying('Recovered live show'),
+        schedule: [_scheduleDay('Recovered White & Jordan')],
+      ),
+    );
+  }
+
+  @override
+  Future<void> reset() async {
+    resetCalls++;
+    _recovered = true;
   }
 }

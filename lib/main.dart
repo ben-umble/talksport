@@ -40,7 +40,9 @@ Future<void> main() async {
     playbackItemRefresher,
     downloadCache,
   );
-  WidgetsBinding.instance.addObserver(_PlaybackLifecycleObserver(audioHandler));
+  WidgetsBinding.instance.addObserver(
+    _AppLifecycleObserver(audioHandler, talkSportApi, stationRepository),
+  );
 
   runApp(
     ProviderScope(
@@ -72,19 +74,64 @@ Future<void> _cleanExpiredCatchUpAudio(
   }
 }
 
-class _PlaybackLifecycleObserver with WidgetsBindingObserver {
-  _PlaybackLifecycleObserver(this.audioHandler);
+class _AppLifecycleObserver with WidgetsBindingObserver {
+  _AppLifecycleObserver(
+    this.audioHandler,
+    this.talkSportApi,
+    this.stationRepository,
+  );
 
   final TalkSportAudioHandler audioHandler;
+  final TalkSportApi talkSportApi;
+  final StationRepository stationRepository;
+  DateTime? _inactiveSince;
+  DateTime _lastMetadataRecoveryAt = DateTime.now();
+  DateTime _lastObservedDate = _dateOnly(DateTime.now());
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      final now = DateTime.now();
+      final inactiveSince = _inactiveSince;
+      final currentDate = _dateOnly(now);
+      final wasAway =
+          inactiveSince != null &&
+          now.difference(inactiveSince) >= const Duration(minutes: 1);
+      final recoveryIsStale =
+          now.difference(_lastMetadataRecoveryAt) >= const Duration(minutes: 5);
+      final dateChanged = currentDate != _lastObservedDate;
+      _inactiveSince = null;
+      _lastObservedDate = currentDate;
+
+      if (wasAway || recoveryIsStale || dateChanged) {
+        _lastMetadataRecoveryAt = now;
+        unawaited(_recoverMetadata());
+      }
+      return;
+    }
+
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused ||
         state == AppLifecycleState.detached ||
         state == AppLifecycleState.hidden) {
+      _inactiveSince ??= DateTime.now();
       unawaited(audioHandler.flushProgress());
     }
+  }
+
+  Future<void> _recoverMetadata() async {
+    try {
+      await talkSportApi.recoverAfterResume(
+        stationRepository.stations.map((station) => station.slug),
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Could not refresh metadata after resume: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+  }
+
+  static DateTime _dateOnly(DateTime value) {
+    return DateTime(value.year, value.month, value.day);
   }
 }
 

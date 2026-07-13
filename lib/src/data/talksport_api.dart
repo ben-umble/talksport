@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/now_playing.dart';
@@ -15,6 +16,8 @@ class TalkSportApi {
     TalkSportPageScraper? pageScraper,
     TalkSportMetadataCache? metadataCache,
     bool createDefaultPageScraper = true,
+    this.requestTimeout = const Duration(seconds: 5),
+    this.pageRequestTimeout = const Duration(seconds: 42),
   }) : _client = client ?? http.Client(),
        _pageScraper =
            pageScraper ??
@@ -40,15 +43,18 @@ class TalkSportApi {
   final http.Client _client;
   final TalkSportPageScraper? _pageScraper;
   final TalkSportMetadataCache _metadataCache;
+  final Duration requestTimeout;
+  final Duration pageRequestTimeout;
   final Map<String, _ScheduleCacheEntry> _scheduleCache = {};
   final Map<String, Future<void>> _backgroundRefreshes = {};
+  final Set<String> _pendingResumeRefreshes = {};
   final StreamController<String> _scheduleUpdates =
       StreamController<String>.broadcast();
 
   static const _cachedMetadataMaxAge = Duration(days: 7);
   static const _backgroundRefreshAfter = Duration(minutes: 2);
   static const _availabilityRefreshAfter = Duration(seconds: 30);
-  static const _requestTimeout = Duration(seconds: 8);
+  static const _scraperResetTimeout = Duration(seconds: 6);
 
   Stream<String> get scheduleUpdates => _scheduleUpdates.stream;
 
@@ -57,6 +63,7 @@ class TalkSportApi {
     bool allowCached = true,
   }) async {
     final cache = _scheduleCache[stationSlug];
+    final forceBackgroundRefresh = _pendingResumeRefreshes.remove(stationSlug);
     CachedTalkSportPagePayload? cached;
     if (allowCached) {
       cached = await _cachedPagePayload(stationSlug);
@@ -64,10 +71,27 @@ class TalkSportApi {
         final cachedSchedule = _scheduleForDisplay(cached.payload.schedule);
         if (cachedSchedule != null) {
           _scheduleCache[stationSlug] = _ScheduleCacheEntry(cachedSchedule);
-          _refreshMetadataInBackground(stationSlug, cached);
+          if (forceBackgroundRefresh) {
+            _refreshApiMetadataInBackground(stationSlug);
+          } else {
+            _refreshMetadataInBackground(stationSlug, cached);
+          }
           return cachedSchedule;
         }
       }
+    }
+
+    final apiSchedule = await _fetchScheduleFromApi(stationSlug);
+    if (apiSchedule != null) {
+      final stabilizedSchedule = await _stabilizeSchedule(
+        stationSlug,
+        apiSchedule,
+      );
+      _scheduleCache[stationSlug] = _ScheduleCacheEntry(stabilizedSchedule);
+      unawaited(
+        _persistScheduleWithBestNowPlaying(stationSlug, stabilizedSchedule),
+      );
+      return stabilizedSchedule;
     }
 
     final pagePayload = await _fetchPagePayload(
@@ -84,13 +108,6 @@ class TalkSportApi {
       );
       unawaited(_metadataCache.write(stationSlug, stabilizedPayload));
       return stabilizedPayload.schedule;
-    }
-
-    final days = await _fetchScheduleFromApi(stationSlug);
-    if (days != null) {
-      _scheduleCache[stationSlug] = _ScheduleCacheEntry(days);
-      _refreshApiMetadataInBackground(stationSlug);
-      return days;
     }
 
     if (allowCached) {
@@ -114,6 +131,12 @@ class TalkSportApi {
       }
     }
 
+    final apiNowPlaying = await _fetchNowPlayingFromApi(stationSlug);
+    if (apiNowPlaying != null) {
+      unawaited(_persistNowPlayingWithBestSchedule(stationSlug, apiNowPlaying));
+      return apiNowPlaying;
+    }
+
     final pagePayload = await _fetchPagePayload(
       stationSlug,
       forceRefresh: !allowCached,
@@ -127,75 +150,59 @@ class TalkSportApi {
       return stabilizedPayload.nowPlaying;
     }
 
-    final nowPlaying = await _fetchNowPlayingFromApi(stationSlug);
-    if (nowPlaying != null) {
-      _refreshApiMetadataInBackground(stationSlug);
-      return nowPlaying;
-    }
-
     throw const TalkSportApiException('Now playing is unavailable.');
   }
 
   Future<TalkSportPagePayload?> _fetchApiPayload(String stationSlug) async {
-    if (!_canUseDirectApi) {
+    final schedule = await _fetchScheduleFromApi(stationSlug);
+    if (schedule == null) {
       return null;
     }
 
-    try {
-      final results = await Future.wait<Object?>([
-        _getJson(Uri.parse('$_baseUrl/schedule/$stationSlug'), 'Schedule'),
-        _getJson(Uri.parse('$_baseUrl/onAirNow/$stationSlug'), 'Now playing'),
-      ]);
-      final schedule = _scheduleFromDecoded(results[0] as List<dynamic>);
-      final nowPlaying = NowPlaying.fromJson(
-        results[1] as Map<String, dynamic>,
-      );
-      return TalkSportPagePayload(nowPlaying: nowPlaying, schedule: schedule);
-    } catch (_) {
+    final nowPlaying = await _fetchNowPlayingFromApi(stationSlug);
+    if (nowPlaying == null) {
       return null;
     }
+    return TalkSportPagePayload(nowPlaying: nowPlaying, schedule: schedule);
   }
 
   Future<List<ScheduleDay>?> _fetchScheduleFromApi(String stationSlug) async {
-    if (!_canUseDirectApi) {
-      return null;
-    }
-
     try {
       final decoded =
-          await _getJson(
-                Uri.parse('$_baseUrl/schedule/$stationSlug'),
-                'Schedule',
-              )
+          await _getJson(_apiUri('schedule', stationSlug), 'Schedule')
               as List<dynamic>;
-      return _scheduleFromDecoded(decoded);
-    } catch (_) {
+      final schedule = _scheduleFromDecoded(decoded);
+      return schedule.isEmpty ? null : schedule;
+    } catch (error) {
+      debugPrint('Direct talkSPORT schedule request failed: $error');
       return null;
     }
   }
 
   Future<NowPlaying?> _fetchNowPlayingFromApi(String stationSlug) async {
-    if (!_canUseDirectApi) {
-      return null;
-    }
-
     try {
       final decoded =
-          await _getJson(
-                Uri.parse('$_baseUrl/onAirNow/$stationSlug'),
-                'Now playing',
-              )
+          await _getJson(_apiUri('onAirNow', stationSlug), 'Now playing')
               as Map<String, dynamic>;
       return NowPlaying.fromJson(decoded);
-    } catch (_) {
+    } catch (error) {
+      debugPrint('Direct talkSPORT now-playing request failed: $error');
       return null;
     }
+  }
+
+  Uri _apiUri(String endpoint, String stationSlug) {
+    return Uri.parse('$_baseUrl/$endpoint/$stationSlug').replace(
+      queryParameters: {
+        'refresh': DateTime.now().millisecondsSinceEpoch.toString(),
+      },
+    );
   }
 
   Future<Object?> _getJson(Uri uri, String label) async {
     final response = await _client
         .get(uri, headers: _headers)
-        .timeout(_requestTimeout);
+        .timeout(requestTimeout);
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw TalkSportApiException(
         '$label request failed with ${response.statusCode}.',
@@ -213,25 +220,17 @@ class TalkSportApi {
       return null;
     }
     try {
-      final firstTimeout = forceRefresh
-          ? const Duration(seconds: 45)
-          : const Duration(seconds: 15);
-      final retryTimeout = forceRefresh
-          ? const Duration(seconds: 20)
-          : const Duration(seconds: 3);
-      final payload = await _pagePayloadWithTimeout(
-        pageScraper.fetch(stationSlug, forceRefresh: forceRefresh),
-        firstTimeout,
-      );
-      if (payload != null) {
-        return payload;
+      return await pageScraper
+          .fetch(stationSlug, forceRefresh: forceRefresh)
+          .timeout(pageRequestTimeout);
+    } catch (error, stackTrace) {
+      debugPrint('talkSPORT WebView metadata request failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+      try {
+        await pageScraper.reset().timeout(_scraperResetTimeout);
+      } catch (resetError) {
+        debugPrint('Could not reset talkSPORT WebView: $resetError');
       }
-
-      return _pagePayloadWithTimeout(
-        pageScraper.fetch(stationSlug, forceRefresh: forceRefresh),
-        retryTimeout,
-      );
-    } catch (_) {
       return null;
     }
   }
@@ -266,13 +265,18 @@ class TalkSportApi {
       return;
     }
 
-    _backgroundRefreshes[stationSlug] = _fetchBestMetadataPayload(stationSlug)
+    late final Future<void> refresh;
+    refresh = _fetchBestMetadataPayload(stationSlug)
         .then((payload) async {
-          if (payload != null) {
+          if (payload != null &&
+              identical(_backgroundRefreshes[stationSlug], refresh)) {
             final stabilizedPayload = await _stabilizePayload(
               stationSlug,
               payload,
             );
+            if (!identical(_backgroundRefreshes[stationSlug], refresh)) {
+              return;
+            }
             await _metadataCache.write(stationSlug, stabilizedPayload);
             _scheduleCache[stationSlug] = _ScheduleCacheEntry(
               stabilizedPayload.schedule,
@@ -281,25 +285,19 @@ class TalkSportApi {
           }
         })
         .catchError((_) {})
-        .whenComplete(() => _backgroundRefreshes.remove(stationSlug));
+        .whenComplete(() {
+          if (identical(_backgroundRefreshes[stationSlug], refresh)) {
+            _backgroundRefreshes.remove(stationSlug);
+          }
+        });
+    _backgroundRefreshes[stationSlug] = refresh;
   }
 
   Future<TalkSportPagePayload?> _fetchBestMetadataPayload(
     String stationSlug,
   ) async {
-    return await _fetchPagePayload(stationSlug, forceRefresh: true) ??
-        await _fetchApiPayload(stationSlug);
-  }
-
-  Future<TalkSportPagePayload?> _pagePayloadWithTimeout(
-    Future<TalkSportPagePayload> payload,
-    Duration timeout,
-  ) async {
-    try {
-      return await payload.timeout(timeout);
-    } on TimeoutException {
-      return null;
-    }
+    return await _fetchApiPayload(stationSlug) ??
+        await _fetchPagePayload(stationSlug, forceRefresh: true);
   }
 
   Object? _decodeJson(http.Response response) {
@@ -368,10 +366,6 @@ class TalkSportApi {
     return null;
   }
 
-  bool get _canUseDirectApi {
-    return _pageScraper == null;
-  }
-
   DateTime _localDate(DateTime value) {
     final local = value.toLocal();
     return DateTime(local.year, local.month, local.day);
@@ -392,6 +386,50 @@ class TalkSportApi {
         freshPayload.schedule,
         cachedPayload.payload.schedule,
       ),
+    );
+  }
+
+  Future<List<ScheduleDay>> _stabilizeSchedule(
+    String stationSlug,
+    List<ScheduleDay> freshSchedule,
+  ) async {
+    final cachedPayload = await _cachedPagePayload(stationSlug);
+    final stabilized = cachedPayload == null
+        ? freshSchedule
+        : _mergeKnownRecordings(freshSchedule, cachedPayload.payload.schedule);
+    return _scheduleForDisplay(stabilized) ?? stabilized;
+  }
+
+  Future<void> _persistScheduleWithBestNowPlaying(
+    String stationSlug,
+    List<ScheduleDay> schedule,
+  ) async {
+    final cached = await _cachedPagePayload(stationSlug);
+    final nowPlaying =
+        cached?.payload.nowPlaying ??
+        await _fetchNowPlayingFromApi(stationSlug);
+    if (nowPlaying == null) {
+      return;
+    }
+    await _metadataCache.write(
+      stationSlug,
+      TalkSportPagePayload(nowPlaying: nowPlaying, schedule: schedule),
+    );
+  }
+
+  Future<void> _persistNowPlayingWithBestSchedule(
+    String stationSlug,
+    NowPlaying nowPlaying,
+  ) async {
+    final cached = await _cachedPagePayload(stationSlug);
+    final schedule =
+        _scheduleCache[stationSlug]?.days ?? cached?.payload.schedule;
+    if (schedule == null || schedule.isEmpty) {
+      return;
+    }
+    await _metadataCache.write(
+      stationSlug,
+      TalkSportPagePayload(nowPlaying: nowPlaying, schedule: schedule),
     );
   }
 
@@ -492,7 +530,33 @@ class TalkSportApi {
     }
   }
 
+  Future<void> recoverAfterResume(Iterable<String> stationSlugs) async {
+    final slugs = stationSlugs.toSet();
+    for (final stationSlug in slugs) {
+      _backgroundRefreshes.remove(stationSlug);
+    }
+
+    final pageScraper = _pageScraper;
+    if (pageScraper != null) {
+      try {
+        await pageScraper.reset().timeout(_scraperResetTimeout);
+      } catch (error) {
+        debugPrint('Could not prepare talkSPORT WebView after resume: $error');
+      }
+    }
+
+    _pendingResumeRefreshes.addAll(slugs);
+    for (final stationSlug in slugs) {
+      _notifyScheduleUpdated(stationSlug);
+    }
+  }
+
   void dispose() {
+    _client.close();
+    final pageScraper = _pageScraper;
+    if (pageScraper != null) {
+      unawaited(pageScraper.dispose());
+    }
     unawaited(_scheduleUpdates.close());
   }
 }

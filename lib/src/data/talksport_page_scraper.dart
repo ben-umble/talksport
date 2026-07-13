@@ -14,6 +14,10 @@ abstract class TalkSportPageScraper {
     bool forceRefresh = false,
   });
 
+  Future<void> reset() async {}
+
+  Future<void> dispose() => reset();
+
   static TalkSportPageScraper? maybeCreate() {
     if (Platform.isWindows) {
       return WindowsTalkSportPageScraper();
@@ -32,14 +36,24 @@ class TalkSportPagePayload {
   final List<ScheduleDay> schedule;
 }
 
-class WindowsTalkSportPageScraper implements TalkSportPageScraper {
+class WindowsTalkSportPageScraper extends TalkSportPageScraper {
   WindowsTalkSportPageScraper();
 
   final Map<String, _PageCacheEntry> _cache = {};
-  final Map<String, Future<TalkSportPagePayload>> _inFlight = {};
+  final Map<String, _InFlightPageRequest> _inFlight = {};
   WebviewController? _controller;
   Future<void>? _initializing;
+  Future<void> _operationTail = Future<void>.value();
+  DateTime? _lastSuccessfulLoadAt;
+  int _requestGeneration = 0;
+  int _controllerGeneration = 0;
   static Future<void>? _environmentInitialization;
+
+  static const _controllerMaxIdle = Duration(minutes: 20);
+  static const _firstAttemptTimeout = Duration(seconds: 14);
+  static const _recoveryAttemptTimeout = Duration(seconds: 18);
+  static const _platformCallTimeout = Duration(seconds: 8);
+  static const _controllerResetTimeout = Duration(seconds: 4);
 
   @override
   Future<TalkSportPagePayload> fetch(
@@ -52,20 +66,55 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
     }
 
     final existing = _inFlight[stationSlug];
-    if (existing != null) {
-      return existing;
+    if (existing != null && (!forceRefresh || existing.forceRefresh)) {
+      return existing.future;
     }
 
     if (forceRefresh) {
       _cache.remove(stationSlug);
     }
 
-    final request = _load(
-      stationSlug,
+    final generation = _requestGeneration;
+    late final Future<TalkSportPagePayload> request;
+    request = _enqueue(() => _load(stationSlug, forceRefresh: forceRefresh))
+        .then((payload) {
+          if (generation == _requestGeneration) {
+            _cache[stationSlug] = _PageCacheEntry(payload, DateTime.now());
+            _lastSuccessfulLoadAt = DateTime.now();
+          }
+          return payload;
+        })
+        .whenComplete(() {
+          final current = _inFlight[stationSlug];
+          if (current != null && identical(current.future, request)) {
+            _inFlight.remove(stationSlug);
+          }
+        });
+    _inFlight[stationSlug] = _InFlightPageRequest(
+      request,
       forceRefresh: forceRefresh,
-    ).whenComplete(() => _inFlight.remove(stationSlug));
-    _inFlight[stationSlug] = request;
+    );
     return request;
+  }
+
+  @override
+  Future<void> reset() {
+    _requestGeneration++;
+    _cache.clear();
+    _inFlight.clear();
+    return _resetController();
+  }
+
+  Future<T> _enqueue<T>(Future<T> Function() operation) {
+    final completer = Completer<T>();
+    _operationTail = _operationTail.then((_) async {
+      try {
+        completer.complete(await operation());
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
+      }
+    });
+    return completer.future;
   }
 
   Future<void> _ensureInitialized() {
@@ -74,42 +123,85 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
       return initializing;
     }
 
-    return _initializing = () async {
-      final version = await WebviewController.getWebViewVersion();
-      if (version == null) {
-        throw const TalkSportPageScraperException(
-          'Microsoft Edge WebView2 Runtime is not installed.',
-        );
-      }
+    final generation = _controllerGeneration;
+    late final Future<void> request;
+    request =
+        () async {
+          final version = await WebviewController.getWebViewVersion().timeout(
+            _platformCallTimeout,
+          );
+          if (version == null) {
+            throw const TalkSportPageScraperException(
+              'Microsoft Edge WebView2 Runtime is not installed.',
+            );
+          }
 
-      await _ensurePersistentEnvironment();
-      final controller = WebviewController();
-      _controller = controller;
-      await controller.initialize();
-      await controller.setPopupWindowPolicy(WebviewPopupWindowPolicy.deny);
-      await controller.setUserAgent(
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/126.0 Safari/537.36',
-      );
-    }();
+          await _ensurePersistentEnvironment();
+          final controller = WebviewController();
+          try {
+            await controller.initialize().timeout(_platformCallTimeout);
+            await controller
+                .setPopupWindowPolicy(WebviewPopupWindowPolicy.deny)
+                .timeout(_platformCallTimeout);
+            await controller
+                .setUserAgent(
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/126.0 Safari/537.36',
+                )
+                .timeout(_platformCallTimeout);
+            if (generation != _controllerGeneration) {
+              await controller.dispose().timeout(_controllerResetTimeout);
+              throw const TalkSportPageScraperException(
+                'WebView initialization was superseded.',
+              );
+            }
+            _controller = controller;
+          } catch (_) {
+            if (controller.value.isInitialized) {
+              try {
+                await controller.dispose().timeout(_controllerResetTimeout);
+              } catch (_) {}
+            }
+            rethrow;
+          }
+        }().whenComplete(() {
+          if (identical(_initializing, request)) {
+            _initializing = null;
+          }
+        });
+    _initializing = request;
+    return request;
   }
 
   Future<TalkSportPagePayload> _load(
     String stationSlug, {
     required bool forceRefresh,
   }) async {
+    if (_controllerIsStale) {
+      await _resetController();
+    }
+
     try {
       return await _loadWithCurrentController(
         stationSlug,
         forceRefresh: forceRefresh,
-      );
-    } catch (error) {
-      if (!forceRefresh) {
-        rethrow;
-      }
+      ).timeout(_firstAttemptTimeout);
+    } catch (_) {
       await _resetController();
-      return _loadWithCurrentController(stationSlug, forceRefresh: true);
+      return _loadWithCurrentController(
+        stationSlug,
+        forceRefresh: true,
+      ).timeout(_recoveryAttemptTimeout);
     }
+  }
+
+  bool get _controllerIsStale {
+    if (_controller == null) {
+      return false;
+    }
+    final lastSuccessfulLoadAt = _lastSuccessfulLoadAt;
+    return lastSuccessfulLoadAt != null &&
+        DateTime.now().difference(lastSuccessfulLoadAt) > _controllerMaxIdle;
   }
 
   Future<TalkSportPagePayload> _loadWithCurrentController(
@@ -121,13 +213,15 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
     if (controller == null) {
       throw const TalkSportPageScraperException('WebView is not initialized.');
     }
-    await controller.setCacheDisabled(forceRefresh);
+    await controller
+        .setCacheDisabled(forceRefresh)
+        .timeout(_platformCallTimeout);
     final cacheBuster = forceRefresh
         ? '?refresh=${DateTime.now().millisecondsSinceEpoch}'
         : '';
-    await controller.loadUrl(
-      'https://talksport.com/play/$stationSlug$cacheBuster',
-    );
+    await controller
+        .loadUrl('https://talksport.com/play/$stationSlug$cacheBuster')
+        .timeout(_platformCallTimeout);
 
     final deadline = DateTime.now().add(
       forceRefresh ? const Duration(seconds: 18) : const Duration(seconds: 35),
@@ -138,12 +232,13 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
     while (DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 900));
       try {
-        lastResult = await controller.executeScript(
-          forceRefresh ? _latestExtractorScript : _extractorScript,
-        );
+        lastResult = await controller
+            .executeScript(
+              forceRefresh ? _latestExtractorScript : _extractorScript,
+            )
+            .timeout(_platformCallTimeout);
         final payload = _payloadFromScriptResult(lastResult);
         if (payload != null) {
-          _cache[stationSlug] = _PageCacheEntry(payload, DateTime.now());
           return payload;
         }
       } catch (error) {
@@ -158,15 +253,17 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
   }
 
   Future<void> _resetController() async {
+    _controllerGeneration++;
     final controller = _controller;
     _controller = null;
     _initializing = null;
+    _lastSuccessfulLoadAt = null;
     if (controller != null) {
       try {
-        await controller.clearCache();
+        await controller.clearCache().timeout(_controllerResetTimeout);
       } catch (_) {}
       try {
-        await controller.dispose();
+        await controller.dispose().timeout(_controllerResetTimeout);
       } catch (_) {}
     }
   }
@@ -214,19 +311,28 @@ class WindowsTalkSportPageScraper implements TalkSportPageScraper {
       return initialization;
     }
 
-    return _environmentInitialization = () async {
-      final directory = Directory(_webViewUserDataPath());
-      await directory.create(recursive: true);
-      try {
-        await WebviewController.initializeEnvironment(
-          userDataPath: directory.path,
-        );
-      } on PlatformException catch (error) {
-        if (!error.message.toString().contains('initialized')) {
-          rethrow;
-        }
-      }
-    }();
+    late final Future<void> request;
+    request =
+        () async {
+          final directory = Directory(_webViewUserDataPath());
+          await directory.create(recursive: true);
+          try {
+            await WebviewController.initializeEnvironment(
+              userDataPath: directory.path,
+            ).timeout(_platformCallTimeout);
+          } on PlatformException catch (error) {
+            if (!error.message.toString().contains('initialized')) {
+              rethrow;
+            }
+          }
+        }().catchError((Object error, StackTrace stackTrace) {
+          if (identical(_environmentInitialization, request)) {
+            _environmentInitialization = null;
+          }
+          Error.throwWithStackTrace(error, stackTrace);
+        });
+    _environmentInitialization = request;
+    return request;
   }
 
   static String _webViewUserDataPath() {
@@ -258,6 +364,13 @@ class _PageCacheEntry {
   final DateTime createdAt;
 
   bool get isFresh => DateTime.now().difference(createdAt).inMinutes < 5;
+}
+
+class _InFlightPageRequest {
+  const _InFlightPageRequest(this.future, {required this.forceRefresh});
+
+  final Future<TalkSportPagePayload> future;
+  final bool forceRefresh;
 }
 
 const _extractorScript = r'''
