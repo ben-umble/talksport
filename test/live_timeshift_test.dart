@@ -60,6 +60,69 @@ void main() {
     expect(state.isAtLiveEdge, isFalse);
   });
 
+  test('presentation clock smooths packet-based live edge updates', () {
+    final clock = LiveEdgePresentationClock();
+    final startedAt = DateTime.utc(2026, 7, 15, 12);
+
+    final first = clock.project(
+      observedEdge: const Duration(seconds: 20),
+      observedAt: startedAt,
+      phase: LiveTimeshiftPhase.ready,
+      at: startedAt,
+    );
+    final betweenPackets = clock.project(
+      observedEdge: const Duration(seconds: 20),
+      observedAt: startedAt,
+      phase: LiveTimeshiftPhase.ready,
+      at: startedAt.add(const Duration(milliseconds: 900)),
+    );
+    final jitteredPacket = clock.project(
+      observedEdge: const Duration(seconds: 21, milliseconds: 400),
+      observedAt: startedAt.add(const Duration(seconds: 1)),
+      phase: LiveTimeshiftPhase.ready,
+      at: startedAt.add(const Duration(seconds: 1)),
+    );
+
+    expect(first, const Duration(seconds: 20));
+    expect(betweenPackets, const Duration(seconds: 20, milliseconds: 900));
+    expect(jitteredPacket, const Duration(seconds: 21, milliseconds: 25));
+  });
+
+  test('presentation clock freezes when live observations go stale', () {
+    final clock = LiveEdgePresentationClock(
+      maximumExtrapolation: const Duration(seconds: 2),
+    );
+    final startedAt = DateTime.utc(2026, 7, 15, 12);
+    clock.project(
+      observedEdge: const Duration(seconds: 20),
+      observedAt: startedAt,
+      phase: LiveTimeshiftPhase.ready,
+      at: startedAt,
+    );
+    final atLimit = clock.project(
+      observedEdge: const Duration(seconds: 20),
+      observedAt: startedAt,
+      phase: LiveTimeshiftPhase.ready,
+      at: startedAt.add(const Duration(seconds: 2)),
+    );
+    final stale = clock.project(
+      observedEdge: const Duration(seconds: 20),
+      observedAt: startedAt,
+      phase: LiveTimeshiftPhase.ready,
+      at: startedAt.add(const Duration(seconds: 3)),
+    );
+    final stillStale = clock.project(
+      observedEdge: const Duration(seconds: 20),
+      observedAt: startedAt,
+      phase: LiveTimeshiftPhase.ready,
+      at: startedAt.add(const Duration(seconds: 4)),
+    );
+
+    expect(atLimit, const Duration(seconds: 22));
+    expect(stale, const Duration(seconds: 22, milliseconds: 750));
+    expect(stillStale, stale);
+  });
+
   test(
     'disk relay keeps recording while its playback client is paused',
     () async {

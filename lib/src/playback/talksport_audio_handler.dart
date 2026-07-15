@@ -84,6 +84,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
   int _recoveryAttempt = 0;
   Timer? _recoveryRetryTimer;
   LiveTimeshiftSession? _liveSession;
+  final LiveEdgePresentationClock _liveEdgeClock = LiveEdgePresentationClock();
   Duration _liveSourceOrigin = Duration.zero;
   bool _liveSeekInProgress = false;
 
@@ -682,6 +683,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
   }) async {
     var session = _liveSession;
     if (session == null) {
+      _liveEdgeClock.reset();
       liveTimeshiftState.value = const LiveTimeshiftState(
         phase: LiveTimeshiftPhase.connecting,
         bufferStart: Duration.zero,
@@ -795,10 +797,15 @@ class TalkSportAudioHandler extends BaseAudioHandler
     }
     final buffer = session.state.value;
     final playbackPosition = position;
+    final presentedLiveEdge = _liveEdgeClock.project(
+      observedEdge: buffer.liveEdge,
+      observedAt: buffer.observedAt,
+      phase: buffer.phase,
+    );
     liveTimeshiftState.value = LiveTimeshiftState(
       phase: buffer.phase,
       bufferStart: buffer.bufferStart,
-      liveEdge: buffer.liveEdge,
+      liveEdge: presentedLiveEdge,
       playbackPosition: playbackPosition,
       errorMessage: buffer.errorMessage,
     );
@@ -808,7 +815,7 @@ class TalkSportAudioHandler extends BaseAudioHandler
     unawaited(
       _mediaControls?.updateTimeline(
         position: playbackPosition,
-        duration: buffer.liveEdge,
+        duration: presentedLiveEdge,
         seekable: liveTimeshiftState.value.canSeek,
       ),
     );
@@ -818,12 +825,14 @@ class TalkSportAudioHandler extends BaseAudioHandler
     final session = _liveSession;
     if (session == null) {
       liveTimeshiftState.value = const LiveTimeshiftState.idle();
+      _liveEdgeClock.reset();
       _liveSourceOrigin = Duration.zero;
       return;
     }
     _liveSession = null;
     session.state.removeListener(_onLiveBufferChanged);
     liveTimeshiftState.value = const LiveTimeshiftState.idle();
+    _liveEdgeClock.reset();
     _liveSourceOrigin = Duration.zero;
     await session.stop();
   }

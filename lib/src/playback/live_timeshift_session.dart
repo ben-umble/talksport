@@ -14,6 +14,7 @@ class LiveBufferSnapshot {
     required this.phase,
     required this.bufferStart,
     required this.liveEdge,
+    this.observedAt,
     this.errorMessage,
   });
 
@@ -21,11 +22,13 @@ class LiveBufferSnapshot {
     : phase = LiveTimeshiftPhase.idle,
       bufferStart = Duration.zero,
       liveEdge = Duration.zero,
+      observedAt = null,
       errorMessage = null;
 
   final LiveTimeshiftPhase phase;
   final Duration bufferStart;
   final Duration liveEdge;
+  final DateTime? observedAt;
   final String? errorMessage;
 }
 
@@ -280,14 +283,11 @@ class LiveTimeshiftSession {
         }
 
         reconnectAttempt = 0;
-        _publishState(
-          phase: LiveTimeshiftPhase.ready,
-          clearError: true,
-          force: true,
-        );
+        var receivedAudio = false;
         final iterator = StreamIterator<List<int>>(response);
         _upstreamIterator = iterator;
-        while (!_stopping && await iterator.moveNext()) {
+        while (!_stopping &&
+            await iterator.moveNext().timeout(_upstreamSilenceTimeout)) {
           final chunk = iterator.current;
           final frames = parser.add(chunk);
           if (frames.isEmpty) {
@@ -295,7 +295,12 @@ class LiveTimeshiftSession {
           }
           await _appendFrames(frames);
           _signalDataAvailable();
-          _publishState(phase: LiveTimeshiftPhase.ready);
+          _publishState(
+            phase: LiveTimeshiftPhase.ready,
+            clearError: !receivedAudio,
+            force: !receivedAudio,
+          );
+          receivedAudio = true;
         }
         await iterator.cancel();
         if (identical(_upstreamIterator, iterator)) {
@@ -603,6 +608,7 @@ class LiveTimeshiftSession {
       phase: phase,
       bufferStart: Duration(microseconds: first?.startMicros ?? 0),
       liveEdge: Duration(microseconds: _liveEdgeMicros.round()),
+      observedAt: now,
       errorMessage: clearError ? null : errorMessage ?? current.errorMessage,
     );
   }
@@ -645,6 +651,8 @@ class LiveTimeshiftSession {
       (_) => random.nextInt(1 << 32).toRadixString(16),
     ).join();
   }
+
+  static const _upstreamSilenceTimeout = Duration(seconds: 8);
 }
 
 class _LiveSegment {

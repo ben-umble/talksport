@@ -125,12 +125,82 @@ void main() {
     await tester.pump();
 
     expect(find.text('00:45 BEHIND'), findsOneWidget);
+    expect(find.text('LIVE'), findsOneWidget);
     expect(find.text('Go Live'), findsOneWidget);
     expect(find.text('15s'), findsNWidgets(2));
 
     await tester.tap(find.text('Go Live'));
     await tester.pump();
     expect(handler.goLiveCalls, 1);
+  });
+
+  testWidgets('animates live timeline movement between stream updates', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 700));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final handler = _FakePlaybackController();
+    addTearDown(handler.dispose);
+    handler.currentItem.value = const PlaybackItem(
+      id: 'live:talksport',
+      kind: PlaybackKind.live,
+      stationSlug: 'talksport',
+      stationName: 'talkSPORT',
+      title: 'White & Jordan',
+      subtitle: 'Live on talkSPORT',
+      description: '',
+      audioUrl: 'https://example.test/live',
+      imageUrl: null,
+      duration: null,
+    );
+    handler.position = const Duration(seconds: 10);
+    handler.liveTimeshiftState.value = const LiveTimeshiftState(
+      phase: LiveTimeshiftPhase.ready,
+      bufferStart: Duration.zero,
+      liveEdge: Duration(seconds: 20),
+      playbackPosition: Duration(seconds: 10),
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [playbackControllerProvider.overrideWithValue(handler)],
+        child: const MaterialApp(
+          home: Scaffold(
+            body: SizedBox.expand(),
+            bottomNavigationBar: PlaybackDock(),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    expect(
+      tester.widget<Slider>(find.byType(Slider)).value,
+      closeTo(0.5, 0.001),
+    );
+
+    handler.position = const Duration(seconds: 15);
+    handler.liveTimeshiftState.value = const LiveTimeshiftState(
+      phase: LiveTimeshiftPhase.ready,
+      bufferStart: Duration.zero,
+      liveEdge: Duration(seconds: 20),
+      playbackPosition: Duration(seconds: 15),
+    );
+    await tester.pump();
+    expect(
+      tester.widget<Slider>(find.byType(Slider)).value,
+      closeTo(0.5, 0.001),
+    );
+
+    await tester.pump(const Duration(milliseconds: 140));
+    final midway = tester.widget<Slider>(find.byType(Slider)).value;
+    expect(midway, greaterThan(0.5));
+    expect(midway, lessThan(0.75));
+
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(
+      tester.widget<Slider>(find.byType(Slider)).value,
+      closeTo(0.75, 0.001),
+    );
   });
 
   testWidgets('keeps delayed-live controls usable on a compact layout', (

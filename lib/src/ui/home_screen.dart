@@ -1325,14 +1325,10 @@ class _LiveDockTimeline extends StatelessWidget {
           SizedBox(
             width: 74,
             child: Text(
-              live.canSeek
-                  ? live.isAtLiveEdge
-                        ? 'LIVE'
-                        : '-${formatDuration(live.behindLive)}'
-                  : '--:--',
+              live.canSeek ? 'LIVE' : '--:--',
               textAlign: TextAlign.end,
               style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: _mutedInk,
+                color: live.canSeek ? _teal : _mutedInk,
                 fontWeight: FontWeight.w800,
               ),
             ),
@@ -1371,18 +1367,55 @@ class _LiveTimelineSlider extends StatefulWidget {
   State<_LiveTimelineSlider> createState() => _LiveTimelineSliderState();
 }
 
-class _LiveTimelineSliderState extends State<_LiveTimelineSlider> {
-  double? _dragValue;
+class _LiveTimelineSliderState extends State<_LiveTimelineSlider>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late double _fromFraction;
+  late double _toFraction;
+  double? _dragFraction;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 280),
+      value: 1,
+    );
+    _fromFraction = _toFraction = _timelineFraction(widget.live);
+  }
+
+  @override
+  void didUpdateWidget(covariant _LiveTimelineSlider oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_dragFraction != null) {
+      return;
+    }
+    final next = _timelineFraction(widget.live);
+    final current = _animatedFraction;
+    if ((next - current).abs() < 0.0001) {
+      _fromFraction = _toFraction = next;
+      _controller.value = 1;
+      return;
+    }
+    _fromFraction = current;
+    _toFraction = next;
+    _controller.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  double get _animatedFraction {
+    final progress = Curves.easeOutCubic.transform(_controller.value);
+    return _fromFraction + ((_toFraction - _fromFraction) * progress);
+  }
 
   @override
   Widget build(BuildContext context) {
-    final minimum = widget.live.bufferStart.inMilliseconds.toDouble();
-    final rawMaximum = widget.live.liveEdge.inMilliseconds.toDouble();
-    final maximum = rawMaximum <= minimum ? minimum + 1 : rawMaximum;
-    final current = widget.live.playbackPosition.inMilliseconds
-        .toDouble()
-        .clamp(minimum, maximum);
-    final value = (_dragValue ?? current).clamp(minimum, maximum).toDouble();
     return SliderTheme(
       data: SliderTheme.of(context).copyWith(
         trackHeight: widget.compact ? 4 : 8,
@@ -1398,24 +1431,63 @@ class _LiveTimelineSliderState extends State<_LiveTimelineSlider> {
         disabledActiveTrackColor: _line,
         disabledInactiveTrackColor: _line,
       ),
-      child: Slider(
-        min: minimum,
-        max: maximum,
-        value: value,
-        onChangeStart: widget.live.canSeek
-            ? (next) => setState(() => _dragValue = next)
-            : null,
-        onChanged: widget.live.canSeek
-            ? (next) => setState(() => _dragValue = next)
-            : null,
-        onChangeEnd: widget.live.canSeek
-            ? (next) {
-                setState(() => _dragValue = null);
-                widget.onChanged(Duration(milliseconds: next.round()));
-              }
-            : null,
+      child: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, _) => Slider(
+          min: 0,
+          max: 1,
+          value: (_dragFraction ?? _animatedFraction).clamp(0.0, 1.0),
+          onChangeStart: widget.live.canSeek
+              ? (next) {
+                  _controller.stop();
+                  setState(() => _dragFraction = next);
+                }
+              : null,
+          onChanged: widget.live.canSeek
+              ? (next) => setState(() => _dragFraction = next)
+              : null,
+          onChangeEnd: widget.live.canSeek
+              ? (next) {
+                  final target = _positionForFraction(widget.live, next);
+                  setState(() {
+                    _dragFraction = null;
+                    _fromFraction = _toFraction = next;
+                    _controller.value = 1;
+                  });
+                  widget.onChanged(target);
+                }
+              : null,
+          semanticFormatterCallback: (fraction) {
+            final position = _positionForFraction(widget.live, fraction);
+            final behind = widget.live.liveEdge - position;
+            return behind <= const Duration(seconds: 3)
+                ? 'Live'
+                : '${_formatLiveDuration(behind)} behind live';
+          },
+        ),
       ),
     );
+  }
+
+  static double _timelineFraction(LiveTimeshiftState live) {
+    final range = live.liveEdge - live.bufferStart;
+    if (range <= Duration.zero) {
+      return 0;
+    }
+    final elapsed = live.playbackPosition - live.bufferStart;
+    return (elapsed.inMicroseconds / range.inMicroseconds).clamp(0.0, 1.0);
+  }
+
+  static Duration _positionForFraction(
+    LiveTimeshiftState live,
+    double fraction,
+  ) {
+    final rangeMicros = (live.liveEdge - live.bufferStart).inMicroseconds.clamp(
+      0,
+      1 << 62,
+    );
+    return live.bufferStart +
+        Duration(microseconds: (rangeMicros * fraction).round());
   }
 }
 
@@ -1588,7 +1660,7 @@ class _ExpandedLiveTimeline extends StatelessWidget {
           children: [
             Text(
               live.canSeek
-                  ? '-${formatDuration(live.bufferedDuration)}'
+                  ? '-${_formatLiveDuration(live.bufferedDuration)}'
                   : '--:--',
               style: Theme.of(context).textTheme.labelLarge?.copyWith(
                 color: _mutedInk,
@@ -1597,11 +1669,9 @@ class _ExpandedLiveTimeline extends StatelessWidget {
             ),
             const Spacer(),
             Text(
-              live.canSeek && !live.isAtLiveEdge
-                  ? '-${formatDuration(live.behindLive)}'
-                  : 'LIVE',
+              live.canSeek ? 'LIVE' : '--:--',
               style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                color: live.isAtLiveEdge ? _teal : _ink,
+                color: live.canSeek ? _teal : _mutedInk,
                 fontWeight: FontWeight.w900,
               ),
             ),
@@ -2093,9 +2163,16 @@ String _liveStatusLabel(LiveTimeshiftState live) {
     LiveTimeshiftPhase.failed => 'BUFFER ERROR',
     LiveTimeshiftPhase.idle => 'LIVE',
     LiveTimeshiftPhase.ready when !live.isAtLiveEdge =>
-      '${formatDuration(live.behindLive)} BEHIND',
+      '${_formatLiveDuration(live.behindLive)} BEHIND',
     LiveTimeshiftPhase.ready => 'LIVE',
   };
+}
+
+String _formatLiveDuration(Duration duration) {
+  final milliseconds = duration.inMilliseconds.clamp(0, 1 << 62);
+  return formatDuration(
+    Duration(seconds: ((milliseconds + 500) / 1000).floor()),
+  );
 }
 
 String _liveBufferStatus(LiveTimeshiftState live) {
