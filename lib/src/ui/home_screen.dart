@@ -12,6 +12,7 @@ import '../models/playback_item.dart';
 import '../models/schedule_day.dart';
 import '../models/show.dart';
 import '../models/station.dart';
+import '../playback/live_timeshift_state.dart';
 import '../playback/playback_controller.dart';
 import '../providers.dart';
 import '../util/playback_math.dart';
@@ -917,46 +918,57 @@ class PlaybackDock extends ConsumerWidget {
           initialData: handler.playbackStateValue,
           builder: (context, snapshot) {
             final state = snapshot.data ?? handler.playbackStateValue;
-            return SafeArea(
-              top: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                child: Center(
-                  heightFactor: 1,
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 1180),
-                    child: Material(
-                      elevation: 18,
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(8),
-                      child: InkWell(
+            return ValueListenableBuilder<LiveTimeshiftState>(
+              valueListenable: handler.liveTimeshiftState,
+              builder: (context, live, _) => SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  child: Center(
+                    heightFactor: 1,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1180),
+                      child: Material(
+                        elevation: 18,
+                        color: Colors.white,
                         borderRadius: BorderRadius.circular(8),
-                        onTap: () => _showPlayerSheet(context, handler),
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-                          child: LayoutBuilder(
-                            builder: (context, constraints) {
-                              final compact = constraints.maxWidth < 760;
-                              return Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  if (item.isCatchUp)
-                                    _DockSeekBar(handler: handler, item: item),
-                                  const SizedBox(height: 8),
-                                  compact
-                                      ? _CompactDockRow(
-                                          handler: handler,
-                                          item: item,
-                                          state: state,
-                                        )
-                                      : _WideDockRow(
-                                          handler: handler,
-                                          item: item,
-                                          state: state,
-                                        ),
-                                ],
-                              );
-                            },
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () => _showPlayerSheet(context, handler),
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                            child: LayoutBuilder(
+                              builder: (context, constraints) {
+                                final compact = constraints.maxWidth < 760;
+                                return Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (item.isCatchUp)
+                                      _DockSeekBar(handler: handler, item: item)
+                                    else
+                                      _LiveDockTimeline(
+                                        handler: handler,
+                                        live: live,
+                                        compact: compact,
+                                      ),
+                                    const SizedBox(height: 8),
+                                    compact
+                                        ? _CompactDockRow(
+                                            handler: handler,
+                                            item: item,
+                                            state: state,
+                                            live: live,
+                                          )
+                                        : _WideDockRow(
+                                            handler: handler,
+                                            item: item,
+                                            state: state,
+                                            live: live,
+                                          ),
+                                  ],
+                                );
+                              },
+                            ),
                           ),
                         ),
                       ),
@@ -977,11 +989,13 @@ class _WideDockRow extends StatelessWidget {
     required this.handler,
     required this.item,
     required this.state,
+    required this.live,
   });
 
   final PlaybackController handler;
   final PlaybackItem item;
   final PlaybackState state;
+  final LiveTimeshiftState live;
 
   @override
   Widget build(BuildContext context) {
@@ -990,7 +1004,12 @@ class _WideDockRow extends StatelessWidget {
         _Artwork(url: item.imageUrl, size: 52),
         const SizedBox(width: 14),
         Expanded(child: _NowPlayingText(item: item)),
-        _TransportCluster(handler: handler, item: item, state: state),
+        _TransportCluster(
+          handler: handler,
+          item: item,
+          state: state,
+          live: live,
+        ),
         const SizedBox(width: 8),
         IconButton(
           tooltip: 'Open player',
@@ -1007,11 +1026,13 @@ class _CompactDockRow extends StatelessWidget {
     required this.handler,
     required this.item,
     required this.state,
+    required this.live,
   });
 
   final PlaybackController handler;
   final PlaybackItem item;
   final PlaybackState state;
+  final LiveTimeshiftState live;
 
   @override
   Widget build(BuildContext context) {
@@ -1024,6 +1045,7 @@ class _CompactDockRow extends StatelessWidget {
           handler: handler,
           item: item,
           state: state,
+          live: live,
           compact: true,
         ),
       ],
@@ -1071,90 +1093,328 @@ class _TransportCluster extends StatelessWidget {
     required this.handler,
     required this.item,
     required this.state,
+    required this.live,
     this.compact = false,
+    this.expanded = false,
   });
 
   final PlaybackController handler;
   final PlaybackItem item;
   final PlaybackState state;
+  final LiveTimeshiftState live;
   final bool compact;
+  final bool expanded;
 
   @override
   Widget build(BuildContext context) {
-    final duration = handler.duration ?? item.duration;
+    final duration = item.isLive
+        ? live.liveEdge
+        : handler.duration ?? item.duration;
     void seekBy(Duration delta) {
-      handler.seek(
-        clampSeekPosition(
-          current: handler.position,
-          delta: delta,
-          duration: duration,
-        ),
-      );
+      if (item.isLive) {
+        handler.seek(handler.position + delta);
+      } else {
+        handler.seek(
+          clampSeekPosition(
+            current: handler.position,
+            delta: delta,
+            duration: duration,
+          ),
+        );
+      }
     }
 
+    final liveSeekable = item.isLive && live.canSeek;
+    final showSeekControls = item.isCatchUp || item.isLive;
+    final canSeekBackward =
+        item.isCatchUp || (liveSeekable && handler.position > live.bufferStart);
+    final canSeekForward =
+        item.isCatchUp || (liveSeekable && !live.isAtLiveEdge);
+
+    final busy =
+        (state.processingState == AudioProcessingState.loading ||
+            (state.playing &&
+                state.processingState == AudioProcessingState.buffering)) ||
+        (item.isLive && live.phase == LiveTimeshiftPhase.connecting);
     final playButton = Padding(
       padding: EdgeInsets.symmetric(horizontal: compact ? 4 : 8),
       child: _RoundPlayButton(
         playing: state.playing,
-        busy:
-            state.processingState == AudioProcessingState.loading ||
-            state.processingState == AudioProcessingState.buffering,
-        onPressed: state.playing ? handler.pause : handler.play,
+        busy: busy,
+        onPressed: busy
+            ? null
+            : state.playing
+            ? handler.pause
+            : handler.play,
         size: compact ? 46 : 56,
       ),
     );
 
+    if (compact && expanded) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _SkipTransportButton(
+                seconds: 15,
+                backward: true,
+                compact: true,
+                onPressed: canSeekBackward
+                    ? () => seekBy(const Duration(seconds: -15))
+                    : null,
+              ),
+              playButton,
+              _SkipTransportButton(
+                seconds: 15,
+                backward: false,
+                compact: true,
+                onPressed: canSeekForward
+                    ? () => seekBy(const Duration(seconds: 15))
+                    : null,
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _SkipTransportButton(
+                seconds: 30,
+                backward: true,
+                compact: true,
+                onPressed: canSeekBackward
+                    ? () => seekBy(const Duration(seconds: -30))
+                    : null,
+              ),
+              const SizedBox(width: 8),
+              _SkipTransportButton(
+                seconds: 30,
+                backward: false,
+                compact: true,
+                onPressed: canSeekForward
+                    ? () => seekBy(const Duration(seconds: 30))
+                    : null,
+              ),
+              const SizedBox(width: 8),
+              _SkipTransportButton(
+                seconds: 60,
+                backward: false,
+                compact: true,
+                onPressed: canSeekForward
+                    ? () => seekBy(const Duration(minutes: 1))
+                    : null,
+              ),
+              const SizedBox(width: 8),
+              _SkipTransportButton(
+                seconds: 240,
+                backward: false,
+                compact: true,
+                onPressed: canSeekForward
+                    ? () => seekBy(const Duration(minutes: 4))
+                    : null,
+              ),
+            ],
+          ),
+        ],
+      );
+    }
+
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (item.isCatchUp) ...[
-          _SkipTransportButton(
-            seconds: 30,
-            backward: true,
-            compact: compact,
-            onPressed: () => seekBy(const Duration(seconds: -30)),
-          ),
-          SizedBox(width: compact ? 4 : 8),
+        if (showSeekControls) ...[
+          if (!compact) ...[
+            _SkipTransportButton(
+              seconds: 30,
+              backward: true,
+              compact: compact,
+              onPressed: canSeekBackward
+                  ? () => seekBy(const Duration(seconds: -30))
+                  : null,
+            ),
+            const SizedBox(width: 8),
+          ],
           _SkipTransportButton(
             seconds: 15,
             backward: true,
             compact: compact,
-            onPressed: () => seekBy(const Duration(seconds: -15)),
+            onPressed: canSeekBackward
+                ? () => seekBy(const Duration(seconds: -15))
+                : null,
           ),
         ],
         playButton,
-        if (item.isCatchUp) ...[
+        if (showSeekControls) ...[
           _SkipTransportButton(
             seconds: 15,
             backward: false,
             compact: compact,
-            onPressed: () => seekBy(const Duration(seconds: 15)),
-          ),
-          SizedBox(width: compact ? 4 : 8),
-          _SkipTransportButton(
-            seconds: 30,
-            backward: false,
-            compact: compact,
-            onPressed: () => seekBy(const Duration(seconds: 30)),
+            onPressed: canSeekForward
+                ? () => seekBy(const Duration(seconds: 15))
+                : null,
           ),
           if (!compact) ...[
-            SizedBox(width: compact ? 4 : 8),
+            const SizedBox(width: 8),
+            _SkipTransportButton(
+              seconds: 30,
+              backward: false,
+              compact: compact,
+              onPressed: canSeekForward
+                  ? () => seekBy(const Duration(seconds: 30))
+                  : null,
+            ),
+            const SizedBox(width: 8),
             _SkipTransportButton(
               seconds: 60,
               backward: false,
               compact: compact,
-              onPressed: () => seekBy(const Duration(minutes: 1)),
+              onPressed: canSeekForward
+                  ? () => seekBy(const Duration(minutes: 1))
+                  : null,
             ),
-            SizedBox(width: compact ? 4 : 8),
+            const SizedBox(width: 8),
             _SkipTransportButton(
               seconds: 240,
               backward: false,
               compact: compact,
-              onPressed: () => seekBy(const Duration(minutes: 4)),
+              onPressed: canSeekForward
+                  ? () => seekBy(const Duration(minutes: 4))
+                  : null,
             ),
           ],
         ],
       ],
+    );
+  }
+}
+
+class _LiveDockTimeline extends StatelessWidget {
+  const _LiveDockTimeline({
+    required this.handler,
+    required this.live,
+    required this.compact,
+  });
+
+  final PlaybackController handler;
+  final LiveTimeshiftState live;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final statusColor = switch (live.phase) {
+      LiveTimeshiftPhase.reconnecting => const Color(0xFFFFE0B2),
+      LiveTimeshiftPhase.failed => const Color(0xFFFFCDD2),
+      _ when !live.isAtLiveEdge => const Color(0xFFFFD8C2),
+      _ => _yellow,
+    };
+    return Row(
+      children: [
+        _StatusBadge(label: _liveStatusLabel(live), color: statusColor),
+        SizedBox(width: compact ? 6 : 10),
+        Expanded(
+          child: _LiveTimelineSlider(
+            live: live,
+            onChanged: handler.seek,
+            compact: true,
+          ),
+        ),
+        if (!compact) ...[
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 74,
+            child: Text(
+              live.canSeek
+                  ? live.isAtLiveEdge
+                        ? 'LIVE'
+                        : '-${formatDuration(live.behindLive)}'
+                  : '--:--',
+              textAlign: TextAlign.end,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: _mutedInk,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ],
+        SizedBox(width: compact ? 4 : 10),
+        if (compact)
+          IconButton.filledTonal(
+            tooltip: 'Go Live',
+            onPressed: live.canGoLive ? handler.goLive : null,
+            icon: const Icon(Icons.sensors_rounded),
+          )
+        else
+          FilledButton.tonalIcon(
+            onPressed: live.canGoLive ? handler.goLive : null,
+            icon: const Icon(Icons.sensors_rounded, size: 18),
+            label: const Text('Go Live'),
+          ),
+      ],
+    );
+  }
+}
+
+class _LiveTimelineSlider extends StatefulWidget {
+  const _LiveTimelineSlider({
+    required this.live,
+    required this.onChanged,
+    this.compact = false,
+  });
+
+  final LiveTimeshiftState live;
+  final ValueChanged<Duration> onChanged;
+  final bool compact;
+
+  @override
+  State<_LiveTimelineSlider> createState() => _LiveTimelineSliderState();
+}
+
+class _LiveTimelineSliderState extends State<_LiveTimelineSlider> {
+  double? _dragValue;
+
+  @override
+  Widget build(BuildContext context) {
+    final minimum = widget.live.bufferStart.inMilliseconds.toDouble();
+    final rawMaximum = widget.live.liveEdge.inMilliseconds.toDouble();
+    final maximum = rawMaximum <= minimum ? minimum + 1 : rawMaximum;
+    final current = widget.live.playbackPosition.inMilliseconds
+        .toDouble()
+        .clamp(minimum, maximum);
+    final value = (_dragValue ?? current).clamp(minimum, maximum).toDouble();
+    return SliderTheme(
+      data: SliderTheme.of(context).copyWith(
+        trackHeight: widget.compact ? 4 : 8,
+        thumbShape: RoundSliderThumbShape(
+          enabledThumbRadius: widget.compact ? 7 : 10,
+        ),
+        overlayShape: RoundSliderOverlayShape(
+          overlayRadius: widget.compact ? 16 : 22,
+        ),
+        activeTrackColor: _orange,
+        inactiveTrackColor: _line,
+        thumbColor: _orange,
+        disabledActiveTrackColor: _line,
+        disabledInactiveTrackColor: _line,
+      ),
+      child: Slider(
+        min: minimum,
+        max: maximum,
+        value: value,
+        onChangeStart: widget.live.canSeek
+            ? (next) => setState(() => _dragValue = next)
+            : null,
+        onChanged: widget.live.canSeek
+            ? (next) => setState(() => _dragValue = next)
+            : null,
+        onChangeEnd: widget.live.canSeek
+            ? (next) {
+                setState(() => _dragValue = null);
+                widget.onChanged(Duration(milliseconds: next.round()));
+              }
+            : null,
+      ),
     );
   }
 }
@@ -1222,63 +1482,168 @@ class _ExpandedPlayer extends StatelessWidget {
           initialData: handler.playbackStateValue,
           builder: (context, snapshot) {
             final state = snapshot.data ?? handler.playbackStateValue;
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 22,
-                right: 22,
-                top: 8,
-                bottom: 22 + MediaQuery.of(context).viewInsets.bottom,
-              ),
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 720),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      width: 44,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: Colors.black26,
-                        borderRadius: BorderRadius.circular(99),
+            return ValueListenableBuilder<LiveTimeshiftState>(
+              valueListenable: handler.liveTimeshiftState,
+              builder: (context, live, _) => Padding(
+                padding: EdgeInsets.only(
+                  left: 22,
+                  right: 22,
+                  top: 8,
+                  bottom: 22 + MediaQuery.of(context).viewInsets.bottom,
+                ),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 720),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 44,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.black26,
+                          borderRadius: BorderRadius.circular(99),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 22),
-                    _Artwork(url: item.imageUrl, size: 154),
-                    const SizedBox(height: 20),
-                    Text(
-                      item.title,
-                      maxLines: 3,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context).textTheme.headlineSmall
-                          ?.copyWith(color: _ink, fontWeight: FontWeight.w900),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      _playbackMeta(item),
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: _mutedInk,
-                        fontWeight: FontWeight.w700,
+                      const SizedBox(height: 22),
+                      _Artwork(url: item.imageUrl, size: 154),
+                      const SizedBox(height: 20),
+                      Text(
+                        item.title,
+                        maxLines: 3,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.headlineSmall
+                            ?.copyWith(
+                              color: _ink,
+                              fontWeight: FontWeight.w900,
+                            ),
                       ),
-                    ),
-                    const SizedBox(height: 22),
-                    if (item.isCatchUp)
-                      _ExpandedTimeline(handler: handler, item: item)
-                    else
-                      const _StatusBadge(label: 'LIVE STREAM', color: _yellow),
-                    const SizedBox(height: 22),
-                    _TransportCluster(
-                      handler: handler,
-                      item: item,
-                      state: state,
-                    ),
-                  ],
+                      const SizedBox(height: 6),
+                      Text(
+                        _playbackMeta(item),
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: _mutedInk,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 22),
+                      if (item.isCatchUp)
+                        _ExpandedTimeline(handler: handler, item: item)
+                      else
+                        _ExpandedLiveTimeline(handler: handler, live: live),
+                      const SizedBox(height: 22),
+                      LayoutBuilder(
+                        builder: (context, constraints) => _TransportCluster(
+                          handler: handler,
+                          item: item,
+                          state: state,
+                          live: live,
+                          compact: constraints.maxWidth < 600,
+                          expanded: true,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             );
           },
         );
       },
+    );
+  }
+}
+
+class _ExpandedLiveTimeline extends StatelessWidget {
+  const _ExpandedLiveTimeline({required this.handler, required this.live});
+
+  final PlaybackController handler;
+  final LiveTimeshiftState live;
+
+  @override
+  Widget build(BuildContext context) {
+    final statusColor = switch (live.phase) {
+      LiveTimeshiftPhase.reconnecting => const Color(0xFFFFE0B2),
+      LiveTimeshiftPhase.failed => const Color(0xFFFFCDD2),
+      _ when !live.isAtLiveEdge => const Color(0xFFFFD8C2),
+      _ => _yellow,
+    };
+    return Column(
+      children: [
+        Row(
+          children: [
+            _StatusBadge(label: _liveStatusLabel(live), color: statusColor),
+            const Spacer(),
+            FilledButton.tonalIcon(
+              onPressed: live.canGoLive ? handler.goLive : null,
+              icon: const Icon(Icons.sensors_rounded, size: 18),
+              label: const Text('Go Live'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        _LiveTimelineSlider(live: live, onChanged: handler.seek),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            Text(
+              live.canSeek
+                  ? '-${formatDuration(live.bufferedDuration)}'
+                  : '--:--',
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: _mutedInk,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const Spacer(),
+            Text(
+              live.canSeek && !live.isAtLiveEdge
+                  ? '-${formatDuration(live.behindLive)}'
+                  : 'LIVE',
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                color: live.isAtLiveEdge ? _teal : _ink,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (live.phase == LiveTimeshiftPhase.connecting)
+              const SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            else
+              Icon(
+                live.phase == LiveTimeshiftPhase.failed
+                    ? Icons.error_outline_rounded
+                    : live.phase == LiveTimeshiftPhase.reconnecting
+                    ? Icons.sync_rounded
+                    : Icons.fiber_manual_record_rounded,
+                size: 15,
+                color: live.phase == LiveTimeshiftPhase.ready
+                    ? _teal
+                    : _mutedInk,
+              ),
+            const SizedBox(width: 7),
+            Flexible(
+              child: Text(
+                _liveBufferStatus(live),
+                maxLines: 2,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: _mutedInk,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }
@@ -1433,7 +1798,7 @@ class _RoundPlayButton extends StatelessWidget {
   });
 
   final bool playing;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
   final bool busy;
   final double size;
 
@@ -1476,7 +1841,7 @@ class _SkipTransportButton extends StatelessWidget {
 
   final int seconds;
   final bool backward;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
   final bool compact;
 
   @override
@@ -1493,7 +1858,7 @@ class _SkipTransportButton extends StatelessWidget {
     return Tooltip(
       message: '$direction $unit',
       child: Material(
-        color: _paper,
+        color: onPressed == null ? _paper.withValues(alpha: 0.65) : _paper,
         borderRadius: BorderRadius.circular(8),
         child: InkWell(
           onTap: onPressed,
@@ -1507,12 +1872,12 @@ class _SkipTransportButton extends StatelessWidget {
                 Icon(
                   backward ? Icons.replay_rounded : Icons.forward_rounded,
                   size: compact ? 18 : 22,
-                  color: _ink,
+                  color: onPressed == null ? _mutedInk : _ink,
                 ),
                 Text(
                   label,
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: _ink,
+                    color: onPressed == null ? _mutedInk : _ink,
                     fontWeight: FontWeight.w900,
                     height: 1,
                   ),
@@ -1719,6 +2084,28 @@ void _showPlayerSheet(BuildContext context, PlaybackController handler) {
       child: SingleChildScrollView(child: _ExpandedPlayer(handler: handler)),
     ),
   );
+}
+
+String _liveStatusLabel(LiveTimeshiftState live) {
+  return switch (live.phase) {
+    LiveTimeshiftPhase.connecting => 'CONNECTING',
+    LiveTimeshiftPhase.reconnecting => 'RECONNECTING',
+    LiveTimeshiftPhase.failed => 'BUFFER ERROR',
+    LiveTimeshiftPhase.idle => 'LIVE',
+    LiveTimeshiftPhase.ready when !live.isAtLiveEdge =>
+      '${formatDuration(live.behindLive)} BEHIND',
+    LiveTimeshiftPhase.ready => 'LIVE',
+  };
+}
+
+String _liveBufferStatus(LiveTimeshiftState live) {
+  return switch (live.phase) {
+    LiveTimeshiftPhase.connecting => 'STARTING LIVE BUFFER',
+    LiveTimeshiftPhase.reconnecting => 'RECONNECTING - BUFFER STILL AVAILABLE',
+    LiveTimeshiftPhase.failed => 'LIVE BUFFER INTERRUPTED',
+    LiveTimeshiftPhase.ready => 'LIVE BUFFER ACTIVE',
+    LiveTimeshiftPhase.idle => 'LIVE BUFFER INACTIVE',
+  };
 }
 
 String _formatRange(DateTime start, DateTime end) {

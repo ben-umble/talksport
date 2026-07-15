@@ -12,6 +12,7 @@ import 'package:talksport_companion/src/models/recording.dart';
 import 'package:talksport_companion/src/models/schedule_day.dart';
 import 'package:talksport_companion/src/models/show.dart';
 import 'package:talksport_companion/src/playback/playback_controller.dart';
+import 'package:talksport_companion/src/playback/live_timeshift_state.dart';
 import 'package:talksport_companion/src/providers.dart';
 import 'package:talksport_companion/src/ui/home_screen.dart';
 
@@ -80,6 +81,106 @@ void main() {
     expect(find.text('15s'), findsNWidgets(2));
     expect(find.text('30s'), findsNWidgets(2));
     expect(find.text('1m'), findsOneWidget);
+    expect(find.text('4m'), findsOneWidget);
+  });
+
+  testWidgets('shows a seekable delayed-live timeline and Go Live action', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 700));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final handler = _FakePlaybackController();
+    addTearDown(handler.dispose);
+    handler.currentItem.value = const PlaybackItem(
+      id: 'live:talksport',
+      kind: PlaybackKind.live,
+      stationSlug: 'talksport',
+      stationName: 'talkSPORT',
+      title: 'White & Jordan',
+      subtitle: 'Live on talkSPORT',
+      description: '',
+      audioUrl: 'https://example.test/live',
+      imageUrl: null,
+      duration: null,
+    );
+    handler.position = const Duration(minutes: 9, seconds: 15);
+    handler.liveTimeshiftState.value = const LiveTimeshiftState(
+      phase: LiveTimeshiftPhase.ready,
+      bufferStart: Duration(minutes: 1),
+      liveEdge: Duration(minutes: 10),
+      playbackPosition: Duration(minutes: 9, seconds: 15),
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [playbackControllerProvider.overrideWithValue(handler)],
+        child: const MaterialApp(
+          home: Scaffold(
+            body: SizedBox.expand(),
+            bottomNavigationBar: PlaybackDock(),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('00:45 BEHIND'), findsOneWidget);
+    expect(find.text('Go Live'), findsOneWidget);
+    expect(find.text('15s'), findsNWidgets(2));
+
+    await tester.tap(find.text('Go Live'));
+    await tester.pump();
+    expect(handler.goLiveCalls, 1);
+  });
+
+  testWidgets('keeps delayed-live controls usable on a compact layout', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final handler = _FakePlaybackController();
+    addTearDown(handler.dispose);
+    handler.currentItem.value = const PlaybackItem(
+      id: 'live:talksport',
+      kind: PlaybackKind.live,
+      stationSlug: 'talksport',
+      stationName: 'talkSPORT',
+      title: 'White & Jordan',
+      subtitle: 'Live on talkSPORT',
+      description: '',
+      audioUrl: 'https://example.test/live',
+      imageUrl: null,
+      duration: null,
+    );
+    handler.position = const Duration(minutes: 9, seconds: 15);
+    handler.liveTimeshiftState.value = const LiveTimeshiftState(
+      phase: LiveTimeshiftPhase.ready,
+      bufferStart: Duration(minutes: 1),
+      liveEdge: Duration(minutes: 10),
+      playbackPosition: Duration(minutes: 9, seconds: 15),
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [playbackControllerProvider.overrideWithValue(handler)],
+        child: const MaterialApp(
+          home: Scaffold(
+            body: SizedBox.expand(),
+            bottomNavigationBar: PlaybackDock(),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(tester.takeException(), isNull);
+    expect(find.text('00:45 BEHIND'), findsOneWidget);
+    expect(find.byIcon(Icons.sensors_rounded), findsOneWidget);
+    expect(find.text('15s'), findsNWidgets(2));
+
+    await tester.tap(find.text('White & Jordan'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
     expect(find.text('4m'), findsOneWidget);
   });
 
@@ -229,9 +330,15 @@ class _FakePlaybackController implements PlaybackController {
   PlaybackState _state = PlaybackState(
     processingState: AudioProcessingState.idle,
   );
+  int goLiveCalls = 0;
 
   @override
   final ValueNotifier<PlaybackItem?> currentItem = ValueNotifier(null);
+
+  @override
+  final ValueNotifier<LiveTimeshiftState> liveTimeshiftState = ValueNotifier(
+    const LiveTimeshiftState.idle(),
+  );
 
   @override
   Duration? duration;
@@ -250,6 +357,11 @@ class _FakePlaybackController implements PlaybackController {
 
   @override
   Future<void> fastForward() async {}
+
+  @override
+  Future<void> goLive() async {
+    goLiveCalls += 1;
+  }
 
   @override
   Future<void> pause() async {
@@ -290,6 +402,7 @@ class _FakePlaybackController implements PlaybackController {
 
   Future<void> dispose() async {
     currentItem.dispose();
+    liveTimeshiftState.dispose();
     await _stateController.close();
     await _positionController.close();
   }

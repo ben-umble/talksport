@@ -2,9 +2,11 @@ import 'package:audio_service/audio_service.dart';
 import 'package:flutter/foundation.dart';
 
 import '../models/playback_item.dart';
+import 'live_timeshift_state.dart';
 
 abstract interface class PlaybackController {
   ValueListenable<PlaybackItem?> get currentItem;
+  ValueListenable<LiveTimeshiftState> get liveTimeshiftState;
   Stream<PlaybackState> get playbackStateStream;
   PlaybackState get playbackStateValue;
   Stream<Duration> get positionStream;
@@ -17,6 +19,7 @@ abstract interface class PlaybackController {
   Future<void> pause();
   Future<void> stop();
   Future<void> seek(Duration position);
+  Future<void> goLive();
   Future<void> fastForward();
   Future<void> rewind();
 }
